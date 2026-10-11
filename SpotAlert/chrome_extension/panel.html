@@ -14,6 +14,12 @@
     </div>
   </header>
   <main>
+    <div class="app-tabs" role="tablist" aria-label="Workspace">
+      <button id="monitoring-tab" role="tab" aria-selected="true" aria-controls="monitoring-view">Monitoring</button>
+      <button id="notifications-tab" role="tab" aria-selected="false" aria-controls="notifications-view" tabindex="-1">Notifications</button>
+      <button id="personal-tab" role="tab" aria-selected="false" aria-controls="personal-view" tabindex="-1">Personal information</button>
+    </div>
+    <div id="monitoring-view" role="tabpanel" aria-labelledby="monitoring-tab">
     <section class="metrics" aria-label="Monitoring totals">
       <div><span class="metric-label">Watching</span><strong id="active-count">0</strong></div>
       <div><span class="metric-label">Available websites</span><strong id="available-count">0</strong></div>
@@ -25,14 +31,6 @@
       <aside class="watchlist">
         <div class="section-heading"><h2>Supported websites <span id="monitor-count" class="count">0</span></h2></div>
         <div id="monitors" class="monitor-list" aria-label="Supported websites"></div>
-        <section class="personal-section" aria-labelledby="personal-title">
-          <h2 id="personal-title">Application details</h2>
-          <span id="application-readiness" class="pill" role="status">Details needed</span>
-          <p id="readiness-description" class="helper"></p>
-          <p class="helper">Prepare your contact details for application forms.</p>
-          <button id="personal-info" class="secondary-button">Personal information</button>
-          <button id="fill-application" class="text-button">Fill application form</button>
-        </section>
         <details class="debug-section"><summary>Debug capture <span id="debug-count" class="count">0</span></summary>
           <label class="checkbox-label"><input id="debug-mode" type="checkbox"> Open and capture application links</label>
           <p class="helper">Opens direct links for available listings in background tabs, once per availability. Opening a link may start a reservation. Saves page text and form structure, excluding entered field values; it does not fill or submit forms.</p>
@@ -46,20 +44,53 @@
         <div class="empty-state"><h2>Select a website</h2></div>
       </section>
     </div>
-  </main>
-  <dialog id="personal-dialog" aria-labelledby="personal-dialog-title">
-    <form id="personal-form">
-      <div class="section-heading"><h2 id="personal-dialog-title">Personal information</h2><button type="button" id="close-personal" class="icon-button" aria-label="Close personal information">×</button></div>
-      <p class="helper">Saved in this Chrome profile. Used only when you press Fill application form. Review the completed form before submitting.</p>
-      <div class="form-row"><label>First name<input id="personal-firstName" autocomplete="given-name" maxlength="200"></label><label>Last name<input id="personal-lastName" autocomplete="family-name" maxlength="200"></label></div>
-      <label>Email<input id="personal-email" type="email" autocomplete="email" maxlength="200"></label>
-      <label>Phone<input id="personal-phone" type="tel" autocomplete="tel" maxlength="200"></label>
-      <label>Street address<input id="personal-address" autocomplete="street-address" maxlength="200"></label>
-      <div class="form-row"><label>Postal code<input id="personal-postalCode" autocomplete="postal-code" maxlength="200"></label><label>City<input id="personal-city" autocomplete="address-level2" maxlength="200"></label></div>
+    </div>
+    <section id="notifications-view" role="tabpanel" aria-labelledby="notifications-tab" hidden>
+      <div class="notifications-heading"><div><span class="eyebrow">STAY INFORMED</span><h2>Notifications</h2></div><span class="scope-badge">All locations</span></div>
+      <p class="notification-intro">Choose how you hear about your next apartment.</p>
+      <div id="notification-sites" class="notification-channel-grid"></div>
+      <form id="notification-contact-form">
+        <div class="notification-channel-grid">
+        <section class="notification-card email-channel" aria-labelledby="email-channel-title">
+        <div class="channel-heading"><span class="channel-icon" aria-hidden="true">✉</span><div><h3 id="email-channel-title">Email</h3><span class="channel-caption">Details straight to your inbox</span></div><label class="channel-switch"><input id="email-enabled" type="checkbox" role="switch" aria-label="Email alerts via Resend"><span></span></label></div>
+        <label>Email address<input id="notification-email" type="email" autocomplete="email" maxlength="200" placeholder="you@example.com"></label>
+        <label>Resend API key<input id="email-api-key" type="password" autocomplete="off" maxlength="200" placeholder="re_…"></label>
+        <details class="channel-advanced"><summary>Sender &amp; delivery settings</summary>
+        <label>Sender email<input id="email-sender" type="email" maxlength="254" placeholder="onboarding@resend.dev" value="onboarding@resend.dev"></label>
+        <p class="helper">Your API key is saved in this Chrome profile. The test sender can only email the address registered with Resend. Use a verified domain to send to other recipients.</p>
+        </details>
+        <button id="test-email" class="secondary-button" type="button">Send test email</button>
+        <p class="channel-footnote">Powered by Resend · separate from application details</p>
+        </section>
+        <section class="notification-card sms-channel" aria-labelledby="sms-channel-title">
+          <div class="channel-heading"><span class="channel-icon" aria-hidden="true">▤</span><div><h3 id="sms-channel-title">SMS</h3><span class="channel-caption">A text when availability arrives</span></div><span class="pill">Coming soon</span></div>
+          <p class="helper">Text alerts are on the way. You can prepare your number now.</p>
+          <details class="channel-advanced"><summary>Prepare phone number</summary>
+          <label>Cell number<input id="notification-phone" type="tel" autocomplete="tel" maxlength="200" placeholder="+31 6 12345678"></label>
+          </details>
+        </section>
+        </div>
+        <div class="notification-save"><span id="notification-save-status" role="status">Email and SMS settings</span><button class="primary-button" type="submit">Save settings</button></div>
+      </form>
+    </section>
+    <section id="personal-view" role="tabpanel" aria-labelledby="personal-tab" hidden>
+      <h2>Personal information</h2>
+      <p class="helper">Prepare your details for apartment applications.</p>
+      <section class="notification-card personal-readiness">
+        <span id="application-readiness" class="pill" role="status">Details needed</span>
+        <p id="readiness-description" class="helper"></p>
+        <button id="fill-application" class="secondary-button">Fill application form</button>
+        <p class="helper">Canvas Apply fills the applicant form automatically. Use this button to fill an application already open in the active tab.</p>
+      </section>
+    <form id="personal-form" class="notification-card">
+      <h3>Application details</h3>
+      <p class="helper">Saved in this Chrome profile. Canvas Apply fills these details automatically, or use Fill application form on an open application. Review the completed form before submitting.</p>
+      <div id="profile-sections"></div>
       <p id="personal-error" class="form-error" role="alert" hidden></p>
       <div class="editor-actions"><button type="button" id="clear-personal" class="secondary-button">Delete saved details</button><button type="submit" class="primary-button">Save personal information</button></div>
     </form>
-  </dialog>
+    </section>
+  </main>
   <dialog id="editor" aria-labelledby="editor-title">
     <form id="monitor-form">
       <div class="section-heading"><div><h2 id="editor-title">New monitor</h2></div><button type="button" id="close-editor" class="icon-button" aria-label="Close editor">×</button></div>
@@ -79,8 +110,8 @@
         <div class="form-row"><label>From<input id="hours-start" type="time" value="08:00" required></label><label>Until<input id="hours-end" type="time" value="22:00" required></label></div>
         <label>Timezone<input id="hours-timezone" required placeholder="Europe/Amsterdam"></label>
       </fieldset>
-      <label class="checkbox-label"><input type="checkbox" id="notify" checked> Show pop-up and desktop notification when availability appears</label>
-      <label class="checkbox-label"><input type="checkbox" id="alert-sound"> Play a sound with alerts</label>
+      <label class="checkbox-label"><input type="checkbox" id="notify" checked> Show pop-up and desktop notification for all locations</label>
+      <label class="checkbox-label"><input type="checkbox" id="alert-sound"> Play a sound with alerts for all locations</label>
       <button type="button" id="editor-test-alert" class="secondary-button">Test notification</button>
       <p class="helper">Matching ignores case and extra spaces.</p>
       <div id="preview-result" class="preview-result" hidden></div>
@@ -94,7 +125,6 @@
     <h2 id="availability-title">New availability</h2>
     <p id="availability-site" class="muted"></p>
     <div id="availability-listings" class="preview-result"></div>
-    <button id="popup-snooze" class="text-button">Snooze alerts for 15 minutes</button>
     <div class="editor-actions"><button id="dismiss-availability" class="secondary-button">Dismiss</button><button id="open-availability" class="primary-button">Open listing ↗</button></div>
   </dialog>
   <div id="toast" class="toast" role="status" hidden></div>

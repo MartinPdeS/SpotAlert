@@ -15,7 +15,10 @@
   ],
   "host_permissions": [
     "https://thisisourdomain.securerc.co.uk/*",
-    "https://southeast-thisisourdomain.securerc.co.uk/*"
+    "https://southeast-thisisourdomain.securerc.co.uk/*",
+    "https://api.resend.com/*",
+    "https://canvas-world.securerc.co.uk/*",
+    "https://www.canvas-world.com/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -37,5 +40,19 @@
   },
   "side_panel": {
     "default_path": "panel.html"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://thisisourdomain.securerc.co.uk/*",
+        "https://southeast-thisisourdomain.securerc.co.uk/*",
+        "https://canvas-world.securerc.co.uk/*",
+        "https://www.canvas-world.com/*"
+      ],
+      "js": [
+        "website-popup.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
 }

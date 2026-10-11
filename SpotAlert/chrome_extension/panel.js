@@ -1,7 +1,7 @@
 import {STORAGE_KEY, availabilityArrivals, siteError, listingKey, safeListingUrl, sitePattern, validateMonitor} from "./core.js";
 
-import {UI_KEY, applicationReadiness, freshness, availabilityTotals} from "./ui.js";
-import {PROFILE_KEY, PROFILE_FIELDS} from "./profile.js";
+import {UI_KEY, freshness, availabilityTotals} from "./ui.js";
+import {PROFILE_KEY, PROFILE_FIELDS, PROFILE_SECTIONS, profileCompleteness} from "./profile.js";
 
 const $ = (selector) => document.querySelector(selector);
 let value = {monitors: []};
@@ -17,6 +17,9 @@ let activeAvailability = null;
 let reloadState = false;
 let personalProfile = {};
 let compactView = false;
+import {EMAIL_KEY, CONTACT_KEY} from "./email.js";
+let contactsLoaded = false;
+let personalDirty = false;
 
 function element(tag, attributes = {}, ...children) {
   const item = document.createElement(tag);
@@ -63,10 +66,19 @@ async function loadState() {
   try {
     do {
       reloadState = false;
-      const [state, preferences] = await Promise.all([request({type: "state"}), chrome.storage.local.get([PROFILE_KEY, UI_KEY])]);
+      const [state, preferences] = await Promise.all([request({type: "state"}), chrome.storage.local.get([PROFILE_KEY, UI_KEY, CONTACT_KEY, EMAIL_KEY])]);
       value = state;
       personalProfile = preferences[PROFILE_KEY] || {};
+      if (!personalDirty) for (const field of PROFILE_FIELDS) $(`#personal-${field}`).value = personalProfile[field] || "";
       compactView = Boolean(preferences[UI_KEY]?.compact);
+      if (!contactsLoaded) {
+        $("#notification-phone").value = preferences[CONTACT_KEY]?.phone || "";
+        $("#notification-email").value = preferences[CONTACT_KEY]?.email || "";
+        $("#email-enabled").checked = Boolean(preferences[EMAIL_KEY]?.enabled);
+        $("#email-api-key").value = preferences[EMAIL_KEY]?.apiKey || "";
+        $("#email-sender").value = preferences[EMAIL_KEY]?.sender || "onboarding@resend.dev";
+        contactsLoaded = true;
+      }
       if (!value.monitors.some((monitor) => monitor.id === selectedId)) selectedId = value.monitors[0]?.id || null;
       render();
     } while (reloadState);
@@ -92,11 +104,12 @@ function updateFreshness() {
 function render() {
   document.body.classList.toggle("compact", compactView);
   $("#compact-view").checked = compactView;
-  const readiness = applicationReadiness(personalProfile);
-  $("#application-readiness").textContent = readiness.ready ? "Contact details ready" : "Details needed";
+  const readiness = profileCompleteness(personalProfile);
+  $("#application-readiness").textContent = readiness.ready ? "Application details ready" : `${readiness.complete}/${readiness.total} details prepared`;
   $("#application-readiness").classList.toggle("available", readiness.ready);
-  $("#readiness-description").textContent = readiness.ready ? "Name, email and phone saved. Review any additional fields on the application." : `Add ${readiness.missing.join(", ")} to prepare your application.`;
+  $("#readiness-description").textContent = readiness.ready ? "Canvas applicant details prepared. Review the website form and agreements before submitting." : `Still needed: ${readiness.missing.slice(0, 6).join(", ")}${readiness.missing.length > 6 ? `, and ${readiness.missing.length - 6} more` : ""}. Based on the current Canvas form; employment and optional fields may also apply.`;
   renderDebug();
+  renderNotifications();
   const totals = availabilityTotals(value.monitors);
   $("#apartment-count").textContent = `${totals.unknownCounts ? "≥" : ""}${totals.apartments}`;
   $("#apartment-count-note").hidden = !totals.unknownCounts;
@@ -156,11 +169,6 @@ function renderDetail() {
   }));
   toolbar.append(element("label", {class: "refresh-control"}, "Refresh every", refresh), element("button", {id: "configure-monitor", class: "small-button", onclick: () => openEditor(monitor)}, "Configure monitor"));
   root.append(toolbar);
-  const alertControls = element("div", {class: "alert-controls"}, actionButton("Test notification", "test-alert", monitor));
-  const snooze = element("select", {"aria-label": "Snooze alerts"}, element("option", {value: ""}, monitor.snoozedUntil > Date.now() ? `Snoozed until ${clock(monitor.snoozedUntil)}` : "Snooze alerts…"), element("option", {value: "0"}, "Resume alerts"), element("option", {value: "15"}, "15 minutes"), element("option", {value: "30"}, "30 minutes"), element("option", {value: "60"}, "1 hour"));
-  snooze.addEventListener("change", guard(async () => { if (snooze.value !== "") { await request({type: "snooze", id: monitor.id, minutes: Number(snooze.value)}); await loadState(); } }));
-  alertControls.append(snooze);
-  root.append(alertControls);
   const filterLabels = {studio: "Studios", "1-bedroom": "1 bedroom", "2-bedroom": "2 bedrooms", "3-plus": "3+ bedrooms"};
   const filterText = (monitor.filters?.types || []).map((type) => filterLabels[type]).join(", ");
   const floors = monitor.filters?.floorplans?.length || 0;
@@ -325,6 +333,10 @@ $("#export").addEventListener("click", () => {
 });
 $(".brand").addEventListener("click", (event) => { event.preventDefault(); window.scrollTo({top: 0, behavior: "smooth"}); });
 function listingButton(monitor, sample) {
+  if (new URL(monitor.url).hostname === "canvas-world.securerc.co.uk") return element("button", {class: "text-button listing-link", onclick: guard(async () => {
+    const result = await request({type: "open-listing", id: monitor.id, listingId: listingKey(sample)});
+    if (result.moveInMessage) toast(result.moveInMessage);
+  })}, "Apply ↗");
   const url = safeListingUrl(sample.applicationUrl, monitor.url);
   if (url) return element("a", {class: "text-button listing-link", href: url, target: "_blank", rel: "noopener noreferrer"}, "Apply ↗");
   return element("button", {class: "text-button listing-link", onclick: guard(() => request({type: "open-listing", id: monitor.id, listingId: listingKey(sample)}))}, "Open application ↗");
@@ -344,7 +356,6 @@ function showNextAvailability() {
   $("#availability-title").textContent = activeAvailability.alert?.test ? "Test notification" : "New availability";
   const listings = activeAvailability.alert?.listings || activeAvailability.samples.filter((sample) => sample.matched);
   const test = activeAvailability.alert?.test;
-  $("#popup-snooze").hidden = Boolean(test);
   $("#availability-listings").replaceChildren(...listings.map((sample) =>
     element("div", {class: "availability-listing"}, element("strong", {}, sample.name || sample.text),
       sample.name && element("p", {}, sample.text),
@@ -355,14 +366,6 @@ $("#availability-popup").addEventListener("close", () => {
   activeAvailability = null;
   showNextAvailability();
 });
-$("#popup-snooze").addEventListener("click", guard(async () => {
-  if (!activeAvailability) return;
-  const id = activeAvailability.id;
-  await request({type: "snooze", id, minutes: 15});
-  for (let index = availabilityQueue.length - 1; index >= 0; index--) if (availabilityQueue[index].id === id && !availabilityQueue[index].alert?.test) availabilityQueue.splice(index, 1);
-  $("#availability-popup").close();
-  await loadState();
-}));
 $("#dismiss-availability").addEventListener("click", () => $("#availability-popup").close());
 $("#open-availability").addEventListener("click", guard(async () => {
   const monitor = activeAvailability;
@@ -377,7 +380,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && (changes[PROFILE_KEY] || changes[UI_KEY])) loadState().catch(error => toast(error.message, true));
   if (area === "local" && changes[STORAGE_KEY]) {
     const change = changes[STORAGE_KEY];
-    availabilityQueue.push(...availabilityArrivals(change.oldValue?.monitors, change.newValue?.monitors));
+    availabilityQueue.push(...availabilityArrivals(change.oldValue?.monitors, change.newValue?.monitors).filter(m => m.alert?.test || change.newValue?.alertPreferences?.popup !== false));
     showNextAvailability();
     loadState().catch((error) => toast(error.message, true));
   }
@@ -388,21 +391,34 @@ setInterval(() => {
   if (monitor && node) node.textContent = nextLabel(monitor);
   updateFreshness();
 }, 1000);
+for (const section of PROFILE_SECTIONS) {
+  const details = element("details", {class: "profile-group"});
+  details.open = section.title === "Identity & contact";
+  details.append(element("summary", {}, section.title));
+  if (section.helper) details.append(element("p", {class: "helper"}, section.helper));
+  const grid = element("div", {class: "profile-fields"});
+  for (const [key, label, type] of section.fields) {
+    const wrapper = element("label", {}, label);
+    const input = Array.isArray(type) ? element("select", {id: `personal-${key}`}) : element("input", {id: `personal-${key}`, type: type || "text", maxlength: "200"});
+    if (Array.isArray(type)) for (const choice of ["", ...type]) input.append(element("option", {value: choice}, choice || "Choose…"));
+    if (type === "number") { input.min = "0"; input.step = "0.01"; }
+    wrapper.append(input);
+    grid.append(wrapper);
+  }
+  details.append(grid);
+  $("#profile-sections").append(details);
+}
 loadState().catch((error) => toast(error.message, true));
 
-$("#personal-info").addEventListener("click", guard(async () => {
-  const profile = await request({type: "profile"});
-  for (const field of PROFILE_FIELDS) $(`#personal-${field}`).value = profile[field] || "";
-  $("#personal-error").hidden = true;
-  $("#personal-dialog").showModal();
-}));
-$("#close-personal").addEventListener("click", () => $("#personal-dialog").close());
+$("#personal-form").addEventListener("input", () => { personalDirty = true; });
 $("#personal-form").addEventListener("submit", async event => {
   event.preventDefault();
   try {
     const profile = Object.fromEntries(PROFILE_FIELDS.map(field => [field, $(`#personal-${field}`).value]));
     await request({type: "save-profile", profile});
-    $("#personal-dialog").close();
+    personalDirty = false;
+    $("#personal-error").hidden = true;
+    await loadState();
     toast("Personal information saved.");
   } catch (error) {
     $("#personal-error").textContent = error.message;
@@ -411,6 +427,8 @@ $("#personal-form").addEventListener("submit", async event => {
 });
 $("#clear-personal").addEventListener("click", guard(async () => {
   await request({type: "clear-profile"});
+  personalDirty = false;
+  await loadState();
   for (const field of PROFILE_FIELDS) $(`#personal-${field}`).value = "";
   $("#personal-error").hidden = true;
   toast("Saved personal information deleted.");
@@ -420,7 +438,7 @@ $("#fill-application").addEventListener("click", guard(async () => {
   button.disabled = true;
   try {
     const result = await request({type: "fill-application"});
-    toast(result.count ? `Filled ${result.count} ${result.count === 1 ? "field" : "fields"}. Review the form before submitting.` : "No empty matching fields found. Open the application form and try again.");
+    toast(result.moveInMessage || (result.count ? `Filled ${result.count} ${result.count === 1 ? "field" : "fields"}. Review the form before submitting.` : "No empty matching fields found. Open the application form and try again."));
   } finally { button.disabled = false; }
 }));
 
@@ -475,4 +493,96 @@ $("#export-debug").addEventListener("click", () => {
   const url = URL.createObjectURL(blob);
   element("a", {href: url, download: "spotalert-debug-captures.json"}).click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+const workspaceTabs = ["monitoring", "notifications", "personal"];
+function switchTab(name) {
+  for (const tab of workspaceTabs) {
+    const active = tab === name;
+    $(`#${tab}-tab`).setAttribute("aria-selected", String(active));
+    $(`#${tab}-tab`).tabIndex = active ? 0 : -1;
+    $(`#${tab}-view`).hidden = !active;
+  }
+}
+for (const name of workspaceTabs) {
+  $(`#${name}-tab`).addEventListener("click", () => switchTab(name));
+  $(`#${name}-tab`).addEventListener("keydown", event => {
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const next = event.key === "Home" ? workspaceTabs[0] : event.key === "End" ? workspaceTabs.at(-1) : workspaceTabs[(workspaceTabs.indexOf(name) + (event.key === "ArrowRight" ? 1 : workspaceTabs.length - 1)) % workspaceTabs.length];
+      switchTab(next);
+      $(`#${next}-tab`).focus();
+    }
+  });
+}
+function renderNotifications() {
+  const root = $("#notification-sites");
+  if (root.contains(document.activeElement)) return;
+  const prefs = value.alertPreferences || {notify: true, sound: false};
+  const notify = element("input", {type: "checkbox", "aria-label": "Pop-up alerts for all locations"});
+  notify.checked = prefs.popup ?? prefs.notify;
+  notify.setAttribute("role", "switch");
+  const sound = element("input", {type: "checkbox", "aria-label": "Sound for all locations"});
+  sound.checked = Boolean(prefs.sound);
+  sound.setAttribute("role", "switch");
+  const desktop = element("input", {type: "checkbox", role: "switch", "aria-label": "Desktop alerts for all locations"});
+  desktop.checked = prefs.desktop ?? prefs.notify;
+  const save = guard(async () => {
+    await request({type: "set-alerts", notify: notify.checked || desktop.checked || sound.checked, popup: notify.checked, desktop: desktop.checked, sound: sound.checked});
+    await loadState();
+  });
+  notify.addEventListener("change", save);
+  sound.addEventListener("change", save);
+  desktop.addEventListener("change", save);
+  const monitor = value.monitors[0];
+  const heading = (icon, title, caption, control) => element("div", {class: "channel-heading"},
+    element("span", {class: "channel-icon", "aria-hidden": "true"}, icon),
+    element("div", {}, element("h3", {}, title), element("span", {class: "channel-caption"}, caption)), control);
+  const toggle = input => element("label", {class: "channel-switch"}, input, element("span"));
+  root.replaceChildren(
+    element("section", {class: "notification-card", "aria-label": "Pop-up notifications"},
+      heading("▣", "Pop-up", "See availability as it happens", toggle(notify)),
+      element("p", {class: "helper"}, "Apartment details and a direct link, inside SpotAlert and on your monitored website pages."),
+      element("p", {class: "channel-footnote"}, "Appears only for real availability on website pages")),
+    element("section", {class: "notification-card", "aria-label": "Desktop notifications"},
+      heading("◇", "Desktop", "Stay informed with the panel closed", toggle(desktop)),
+      element("p", {class: "helper"}, "Chrome shows a notification even when you’re browsing another tab."),
+      element("p", {class: "channel-footnote"}, "Independent of pop-ups · Chrome must be running")),
+    element("section", {class: "notification-card", "aria-label": "Sound notifications"},
+      heading("♫", "Sound", "An audible heads-up", toggle(sound)),
+      element("p", {class: "helper"}, "A short chime accompanies new availability."),
+      element("p", {class: "channel-footnote"}, "Independent of pop-up and desktop alerts")),
+    element("div", {class: "alert-controls notification-shared-controls"}, element("span", {class: "channel-footnote"}, "Want to hear and see an example?"), monitor && actionButton("Test notification", "test-alert", monitor)));
+
+}
+async function saveNotificationSettings() {
+  if ($("#email-enabled").checked && (!$("#notification-email").value.trim() || !$("#email-api-key").value.trim())) throw new Error("Enter an email destination and Resend API key first.");
+  await chrome.storage.local.set({[EMAIL_KEY]: {enabled: $("#email-enabled").checked, apiKey: $("#email-api-key").value.trim(), sender: $("#email-sender").value.trim() || "onboarding@resend.dev"}, [CONTACT_KEY]: {
+    phone: $("#notification-phone").value.trim(), email: $("#notification-email").value.trim(),
+  }});
+  $("#notification-save-status").textContent = "Settings saved";
+}
+$("#notification-contact-form").addEventListener("submit", guard(async event => {
+  event.preventDefault();
+  await saveNotificationSettings();
+  toast("Notification settings saved.");
+}));
+$("#email-enabled").addEventListener("change", guard(async () => {
+  const toggle = $("#email-enabled");
+  const enabled = toggle.checked;
+  toggle.disabled = true;
+  try { await saveNotificationSettings(); }
+  catch (error) { toggle.checked = !enabled; throw error; }
+  finally { toggle.disabled = false; }
+}));
+
+$("#test-email").addEventListener("click", guard(async () => {
+  const button = $("#test-email");
+  button.disabled = true;
+  try { await request({type: "test-email"}); toast("Test email sent. Check your inbox and spam folder."); }
+  finally { button.disabled = false; }
+}));
+
+$("#notification-contact-form").addEventListener("input", () => {
+  $("#notification-save-status").textContent = "Unsaved changes";
 });

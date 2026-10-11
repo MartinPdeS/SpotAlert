@@ -8,6 +8,10 @@ export const SUPPORTED_SITES = [{
   id: "ourdomain-amsterdam-south-east", name: "OurDomain · Amsterdam South East",
   url: "https://southeast-thisisourdomain.securerc.co.uk/onlineleasing/ourdomain-amsterdam-south-east/floorplans.aspx",
   rule: {type: "css", selector: 'td[data-selenium-id^="Apply_"] [data-selenium-id="ApplyNow"]', mode: "not_equals", expected: "Get Notified"},
+}, {
+  id: "canvas-rotterdam-blaak", name: "Canvas · Rotterdam Blaak",
+  url: "https://canvas-world.securerc.co.uk/onlineleasing/andre-van-der-louwbrug-4-rotterdam-3011-wm/floorplans.aspx",
+  rule: {type: "css", selector: 'td[data-selenium-id^="Apply_"] [data-selenium-id="ApplyNow"], td[data-selenium-id^="Availability_"]', mode: "contains", expected: "Check availability"},
 }];
 export function supportedSite(url) {
   const parsed = new URL(url);

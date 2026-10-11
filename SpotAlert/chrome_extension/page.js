@@ -17,12 +17,15 @@ export async function readPage(rule, waitMs = 12000) {
       // South East collapses floor-plan sections and repeats them for mobile.
       // Its application-button labels remain meaningful even while collapsed.
       const applicationButtons = rule.type === "css"
-        && rule.selector === 'td[data-selenium-id^="Apply_"] [data-selenium-id="ApplyNow"]';
+        && [
+          'td[data-selenium-id^="Apply_"] [data-selenium-id="ApplyNow"]',
+          'td[data-selenium-id^="Apply_"] [data-selenium-id="ApplyNow"], td[data-selenium-id^="Availability_"]',
+        ].includes(rule.selector);
       let visible = elements.filter((element) => applicationButtons || element.getClientRects().length > 0);
       if (applicationButtons) {
         const listings = new Map();
         visible.forEach((element, index) => {
-          const key = element.closest('td[data-selenium-id^="Apply_"]')?.getAttribute("data-selenium-id") || `element-${index}`;
+          const key = element.closest('td[data-selenium-id^="Apply_"], td[data-selenium-id^="Availability_"]')?.getAttribute("data-selenium-id") || `element-${index}`;
           const previous = listings.get(key);
           if (!previous || element.getClientRects().length > 0 || !previous.textContent?.trim()) listings.set(key, element);
         });
@@ -121,4 +124,33 @@ export function openApplication(listing) {
   if (control.disabled || /get notified|unavailable|sold out/i.test(text)) return {opened: false, reason: "This listing is no longer available."};
   control.click();
   return {opened: true};
+}
+
+/** Read only the selected floor plan's real Book links. Never submits an application. */
+export async function canvasBookingLink(listing, waitMs = 12000) {
+  const end = Date.now() + waitMs;
+  do {
+    if (/termsandotheritems\.aspx$/i.test(location.pathname)) return {url: location.href};
+    const buttons = [...document.querySelectorAll('input[type="button"], button')].filter(button => !button.disabled && /^book\b/i.test((button.innerText || button.value || button.textContent || '').trim()));
+    const actions = buttons.map(button => {
+      const args = (button.getAttribute('onclick') || '').match(/ApplyNowClick\(["'](\d+)["'],\s*["'](\d+)["'],\s*["'](\d+)["'],\s*["'](\d{1,2}-\d{1,2}-\d{4})["'],\s*["']termsandotheritems\.aspx["']/i);
+      if (!args || (listing.floorplanId && args[2] !== String(listing.floorplanId))) return null;
+      const [day, month, year] = args[4].split('-').map(Number);
+      return {button, date: new Date(year, month - 1, day).getTime()};
+    }).filter(Boolean).sort((a, b) => a.date - b.date);
+    if (actions.length) { actions[0].button.click(); return {opened: true}; }
+    const links = [...document.querySelectorAll('a[href]')].filter(link => /^book\b/i.test((link.innerText || link.textContent || '').trim()));
+    const candidates = links.map(link => {
+      try {
+        const url = new URL(link.getAttribute('href'), location.href);
+        if (url.origin !== location.origin || !/termsandotheritems\.aspx$/i.test(url.pathname)) return null;
+        if (listing.floorplanId && url.searchParams.get('FloorPlanID') !== String(listing.floorplanId)) return null;
+        const [day, month, year] = (url.searchParams.get('MoveInDate') || '').split('-').map(Number);
+        return {url: url.href, date: new Date(year, month - 1, day).getTime()};
+      } catch { return null; }
+    }).filter(Boolean).sort((a, b) => (a.date || Infinity) - (b.date || Infinity));
+    if (candidates.length) return {url: candidates[0].url};
+    await new Promise(resolve => setTimeout(resolve, 250));
+  } while (Date.now() < end);
+  return {error: 'No Book link found for this floor plan. Check the opened tab for availability or a verification prompt.'};
 }

@@ -29,7 +29,7 @@ function fakeChrome() {
     pageSamples: [{index: 1, text: "Get Notified", context: "Studio A"}],
     allowed: true, completeReload: true,
     storage: {local: {
-      get: async (key) => ({[key]: structuredClone(data[key])}),
+      get: async (key) => Array.isArray(key) ? Object.fromEntries(key.map(item => [item, structuredClone(data[item])])) : ({[key]: structuredClone(data[key])}),
       set: async (items) => { Object.assign(data, structuredClone(items)); },
     }},
     action: {setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {}, setTitle: async () => {}},
@@ -74,7 +74,7 @@ test("standalone manifest has side panel and no native-messaging dependency", as
   assert.ok(manifest.permissions.includes("sidePanel"));
   assert.ok(manifest.permissions.includes("storage"));
   assert.ok(!manifest.permissions.includes("nativeMessaging"));
-  assert.deepEqual(manifest.host_permissions, ["https://thisisourdomain.securerc.co.uk/*", "https://southeast-thisisourdomain.securerc.co.uk/*"]);
+  assert.deepEqual(manifest.host_permissions, ["https://thisisourdomain.securerc.co.uk/*", "https://southeast-thisisourdomain.securerc.co.uk/*", "https://api.resend.com/*", "https://canvas-world.securerc.co.uk/*", "https://www.canvas-world.com/*"]);
   assert.equal(manifest.side_panel.default_path, "panel.html");
 });
 
@@ -360,7 +360,7 @@ test("South East rule correction migrates the old default and preserves custom s
   assert.equal(updated.rule.selector, 'td[data-selenium-id^="Apply_"] [data-selenium-id="ApplyNow"]');
   assert.equal(updated.enabled, true);
   assert.equal(updated.intervalSeconds, 5);
-  assert.equal(updated.notify, false);
+  assert.equal(updated.notify, true);
   assert.equal(updated.checks, 12);
   assert.equal(updated.error, null);
   assert.equal(updated.history[0].kind, "updated");
@@ -635,14 +635,16 @@ test("personal details validate, persist separately, delete, and never enter mon
   const {api, engine} = await setup();
   const {PROFILE_KEY, validateProfile} = await import("../SpotAlert/chrome_extension/profile.js");
   assert.throws(() => validateProfile({email: "invalid"}), /valid email/);
+  assert.throws(() => validateProfile({moveInFrom: "2026-02-30"}), /move-in/);
   assert.throws(() => validateProfile({firstName: "a".repeat(201)}), /200/);
-  await engine.dispatch({type: "save-profile", profile: {firstName: " Alex ", lastName: "Example", email: "alex@example.com", password: "ignored"}});
+  await engine.dispatch({type: "save-profile", profile: {firstName: " Alex ", lastName: "Example", email: "alex@example.com", moveInFrom: "2026-10-20", password: "ignored"}});
+  assert.equal((await engine.dispatch({type: "profile"})).moveInFrom, "2026-10-20");
   assert.equal(api.data[PROFILE_KEY].firstName, "Alex");
   assert.equal(api.data[PROFILE_KEY].password, undefined);
   assert.equal((await engine.dispatch({type: "profile"})).email, "alex@example.com");
   assert.doesNotMatch(JSON.stringify(await engine.state()), /alex@example/);
   api.url = "https://example.com/application";
-  await assert.rejects(engine.dispatch({type: "fill-application"}), /OurDomain application/);
+  await assert.rejects(engine.dispatch({type: "fill-application"}), /supported housing application/);
   await engine.dispatch({type: "clear-profile"});
   assert.equal((await engine.dispatch({type: "profile"})).firstName, "");
   await assert.rejects(engine.dispatch({type: "fill-application"}), /Save your personal/);
@@ -755,4 +757,193 @@ test("Stop all cancels a loading debug capture without clearing successful resul
   assert.equal(state.monitors[0].phase, "paused");
   assert.equal(state.monitors[0].available, true);
   assert.equal(api.tabs.onUpdated.listeners.size, 0);
+});
+
+
+test("notification preferences change without pausing or discarding observations", async () => {
+  const {engine, id} = await setup();
+  await engine.setEnabled(id, true);
+  const before = (await engine.state()).monitors.find(m => m.id === id);
+  await engine.dispatch({type: "set-alerts", id, notify: false, sound: true});
+  const after = (await engine.state()).monitors.find(m => m.id === id);
+  assert.equal(after.notify, false);
+  assert.equal(after.sound, true);
+  assert.equal(after.enabled, true);
+  assert.equal(after.nextCheckAt, before.nextCheckAt);
+  assert.deepEqual(after.samples, before.samples);
+  await assert.rejects(engine.dispatch({type: "set-alerts", id, notify: "yes", sound: false}), /valid notification/);
+});
+
+test("Resend sending is opt-in, authenticated, and reports provider failures", async () => {
+  const {sendEmailAlert, EMAIL_KEY, CONTACT_KEY} = await import("../SpotAlert/chrome_extension/email.js");
+  let settings = {};
+  const api = {storage: {local: {get: async () => settings}}};
+  assert.deepEqual(await sendEmailAlert(api, {id: "test"}, "Subject", "Body"), {skipped: true});
+  await assert.rejects(sendEmailAlert(api, {id: "test"}, "Subject", "Body", true), /destination/);
+  settings = {[EMAIL_KEY]: {enabled: true, apiKey: "re_test"}, [CONTACT_KEY]: {email: "recipient@gmail.com"}};
+  const previousFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url, options) => {
+      assert.equal(url, "https://api.resend.com/emails");
+      assert.equal(options.headers.Authorization, "Bearer re_test");
+      assert.deepEqual(JSON.parse(options.body).to, ["recipient@gmail.com"]);
+      return {ok: true, json: async () => ({id: "test-email"})};
+    };
+    assert.equal((await sendEmailAlert(api, {id: "test"}, "Subject", "Body")).sent, true);
+    globalThis.fetch = async () => ({ok: false, status: 401, json: async () => ({})});
+    await assert.rejects(sendEmailAlert(api, {id: "test"}, "Subject", "Body"), /API key/);
+    globalThis.fetch = async () => { throw new Error("offline"); };
+    await assert.rejects(sendEmailAlert(api, {id: "test"}, "Subject", "Body"), /reach Resend/);
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+
+test("new availability sends Resend details and email failures preserve successful checks", async () => {
+  const {engine, api, id} = await setup();
+  const {EMAIL_KEY, CONTACT_KEY} = await import("../SpotAlert/chrome_extension/email.js");
+  api.data[EMAIL_KEY] = {enabled: true, apiKey: "re_test"};
+  api.data[CONTACT_KEY] = {email: "recipient@gmail.com"};
+  let payload;
+  const previousFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (_url, options) => {
+      payload = JSON.parse(options.body);
+      return {ok: false, json: async () => ({error: "Resend authentication failed."})};
+    };
+    api.pageSamples = [{index: 1, id: "studio", name: "Studio A", rent: "€900", text: "Apply now", context: "Studio", applicationUrl: api.url.replace("floorplans.aspx", "availableunits.aspx")}];
+    await engine.check(id);
+    assert.match(payload.text, /Studio A.*€900/);
+    assert.match(payload.text, /availableunits.aspx/);
+    const monitor = (await engine.state()).monitors.find(m => m.id === id);
+    assert.equal(monitor.available, true);
+    assert.equal(monitor.error, null);
+    assert.ok(monitor.history.some(event => event.kind === "warning" && event.message.includes("Email failed")));
+    assert.equal(api.notificationsLog.length, 1);
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+
+test("global alert preferences persist and old snooze settings clear on restart", async () => {
+  const {engine, api, createEngine} = await setup();
+  await engine.dispatch({type: "set-alerts", notify: false, sound: true});
+  assert.ok((await engine.state()).monitors.every(m => !m.notify && m.sound));
+  await engine.dispatch({type: "snooze-all", minutes: 15});
+  assert.ok((await engine.state()).monitors.every(m => m.snoozedUntil === 1900000));
+  const restarted = createEngine(api, () => 1000000);
+  await restarted.initialize();
+  assert.ok((await restarted.state()).monitors.every(m => !m.notify && m.sound));
+  assert.ok((await restarted.state()).monitors.every(m => m.snoozedUntil === null));
+});
+
+test("pop-up and desktop delivery are independent, including email-only alerts", async () => {
+  const {engine, api, id} = await setup();
+  await engine.dispatch({type: "set-alerts", notify: true, popup: true, desktop: false, sound: false});
+  api.pageSamples = [{index: 1, text: "Apply now", name: "Studio"}];
+  await engine.check(id);
+  assert.equal(api.notificationsLog.length, 0);
+  assert.ok((await engine.state()).monitors[0].alert);
+  api.pageSamples = [{index: 1, text: "Get Notified"}];
+  await engine.check(id);
+  await engine.dispatch({type: "set-alerts", notify: true, popup: false, desktop: true, sound: false});
+  api.pageSamples = [{index: 1, text: "Apply now", name: "Studio"}];
+  await engine.check(id);
+  assert.equal(api.notificationsLog.length, 1);
+  assert.equal((await engine.state()).alertPreferences.popup, false);
+  api.pageSamples = [{index: 1, text: "Get Notified"}];
+  await engine.check(id);
+  await engine.dispatch({type: "set-alerts", notify: false, popup: false, desktop: false, sound: false});
+  const {EMAIL_KEY, CONTACT_KEY} = await import("../SpotAlert/chrome_extension/email.js");
+  api.data[EMAIL_KEY] = {enabled: true, apiKey: "re_test"};
+  api.data[CONTACT_KEY] = {email: "recipient@gmail.com"};
+  let emails = 0;
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => { emails++; return {ok: true, json: async () => ({id: "email-only"})}; };
+  try {
+    api.pageSamples = [{index: 1, text: "Apply now", name: "Studio"}];
+    await engine.check(id);
+    assert.equal(emails, 1);
+    assert.equal(api.notificationsLog.length, 1);
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+
+test("Canvas Blaak is added without replacing OurDomain history and matches positive availability only", async () => {
+  const {engine, api, id, core} = await setup();
+  const canvas = (await engine.state()).monitors.find(m => m.id === "canvas-rotterdam-blaak");
+  assert.ok(canvas.url.startsWith("https://canvas-world.securerc.co.uk/"));
+  const result = core.evaluateRule([
+    {index: 1, name: "1 Bedroom Executive", beds: "1", rent: "€ 1.724 – € 1.733", text: "Check availability"},
+    {index: 2, name: "Standard Studio", beds: "Studio", text: "Get Notified"},
+    {index: 3, name: "Executive Studio", text: "Contact for Availability"},
+  ], canvas.rule);
+  assert.deepEqual(result.matches.map(m => m.matched), [true, false, false]);
+  api.url = canvas.url;
+  api.pageSamples = result.matches;
+  await engine.check(canvas.id);
+  const state = await engine.state();
+  assert.equal(state.monitors.find(m => m.id === canvas.id).available, true);
+  assert.equal(state.monitors.find(m => m.id === id).checks, 0);
+  assert.match(api.notificationsLog[0].title, /Canvas.*Blaak/);
+});
+
+test("move-in selection respects the earliest preference, calendar limits, and excluded weekdays", async () => {
+  const {selectMoveInDate} = await import("../SpotAlert/chrome_extension/profile.js");
+  const input = {value: "17-10-2026", getClientRects: () => [1], dispatchEvent() {}};
+  const config = "$('#sMoveInDate').datepicker({minDate: '17-10-2026', maxDate: '30-10-2026'}); var excludedDays = [0,6];";
+  const context = {document: {querySelector: () => input, scripts: [{textContent: config}]}, HTMLInputElement: {prototype: {}}, Event: class {}, setTimeout: callback => callback()};
+  Object.defineProperty(context.HTMLInputElement.prototype, 'value', {set(value) {this.value = value;}});
+  const choose = date => vm.runInNewContext(`(${selectMoveInDate.toString()})({moveInFrom: ${JSON.stringify(date)}})`, context);
+  assert.equal(choose("").moveInDate, "19-10-2026");
+  assert.equal(choose("2026-10-01").moveInDate, "19-10-2026");
+  assert.equal(choose("2026-10-20").moveInDate, "20-10-2026");
+  assert.equal(choose("2026-10-24").moveInDate, "26-10-2026");
+  assert.equal(choose("2026-10-30").moveInDate, "30-10-2026");
+  assert.equal(choose("2026-10-31").count, 0);
+  assert.equal(input.value, "30-10-2026");
+  context.document.scripts = [];
+  assert.match(choose("2026-10-20").moveInMessage, /Could not determine/);
+  assert.equal(input.value, "30-10-2026");
+});
+
+test("Canvas Book chooses the earliest unit in the selected floor plan and never starts an application", async () => {
+  const {canvasBookingLink} = await import('../SpotAlert/chrome_extension/page.js');
+  let clicked = null;
+  const button = (id, floorplan, date) => ({value: 'Book now', getAttribute: () => `return ApplyNowClick('${id}','${floorplan}','186511','${date}','termsandotheritems.aspx');`, click: () => {clicked = id;}});
+  const context = {location: {pathname: '/availableunits.aspx'}, document: {querySelectorAll: () => [button('450280', '502', '16-10-2026'), button('450348', '501', '6-11-2026'), button('450281', '501', '17-10-2026')]}, Date};
+  const result = await vm.runInNewContext(`(${canvasBookingLink.toString()})({floorplanId:'501'}, 0)`, context);
+  assert.equal(result.opened, true);
+  assert.equal(clicked, '450281');
+});
+
+test('Start Application requires the selected date and an enabled button, and clicks once', async () => {
+  const {startCanvasApplication} = await import('../SpotAlert/chrome_extension/profile.js');
+  const input = {value:'26-10-2026'};
+  let clicks = 0;
+  const button = {innerText:'Start Application', disabled:false, getAttribute:()=>null, getClientRects:()=>[1], click:()=>clicks++};
+  const context = {document:{querySelector:()=>input, querySelectorAll:()=>[button]}, Date, setTimeout: callback=>callback()};
+  const run = () => vm.runInNewContext(`(${startCanvasApplication.toString()})('26-10-2026',0)`,context);
+  assert.equal((await run()).started,true);
+  assert.equal(clicks,1);
+  input.value='27-10-2026';
+  assert.equal((await run()).started,false);
+  input.value='26-10-2026';
+  button.disabled=true;
+  assert.equal((await run()).started,false);
+  assert.equal(clicks,1);
+});
+
+test('expanded profiles validate choices, dates and zero income, and count Canvas requirements', async () => {
+  const {validateProfile, profileCompleteness, PROFILE_FIELDS} = await import('../SpotAlert/chrome_extension/profile.js');
+  const profile = validateProfile({firstName:'Alex', dateOfBirth:'1995-03-04', monthlyHousingCost:'0', monthlyIncome:'1234.50', hasPets:'No', noMiddleName:'Yes'});
+  assert.equal(profile.monthlyHousingCost,'0');
+  assert.equal(profile.hasPets,'No');
+  assert.throws(()=>validateProfile({dateOfBirth:'1995-02-30'}),/valid date/);
+  assert.throws(()=>validateProfile({monthlyIncome:'-10'}),/non-negative/);
+  assert.throws(()=>validateProfile({hasPets:'maybe'}),/valid pets/);
+  assert.throws(()=>validateProfile({middleName:'Example',noMiddleName:'Yes'}),/Clear/);
+  assert.ok(!profileCompleteness(profile).missing.includes('Middle name'));
+  assert.ok(profileCompleteness({}).missing.includes('Middle name'));
+  const all=Object.fromEntries(PROFILE_FIELDS.map(key=>[key,'prepared']));
+  all.noMiddleName='Yes';
+  assert.equal(profileCompleteness(all).ready,true);
 });

@@ -53,17 +53,28 @@ email, phone, street address, postal code, and city. These details stay in
 Chrome local extension storage, separate from monitor history and rule exports.
 **Delete saved details** clears them. An application readiness badge checks that first name, last name, valid email, and phone are saved; address fields remain optional. Additional application requirements still need review.
 
-When an apartment becomes available, open its application page and use
-**Fill application form** from SpotAlert's side panel while that page is the
-active tab. It fills empty recognized fields on the two supported OurDomain
-origins and leaves existing entries, passwords, verification fields, and consent
-checkboxes alone. Review and submit the application yourself. Field recognition
-uses autocomplete attributes and common English/Dutch labels; unusual or embedded
-forms may need manual entry. Saving information does not automatically fill pages.
+Personal information includes identity and contact details, moving preferences,
+current housing, employment and income, emergency contacts, education, application
+choices, and optional identification/bank details. A completeness indicator tracks
+fields required by the current Canvas applicant form. Existing profiles are preserved.
 
-## Monitor OurDomain
+For Canvas, **Apply** opens the floor plan in a separate tab, follows **Book now**,
+selects the first allowed move-in date on or after your preference (or the earliest
+allowed date if none is saved), clicks **Start Application**, and fills the applicant
+form from saved details. Calendar limits and excluded weekends are respected. The
+flow waits for Canvas's background form updates and leaves monitoring on its original
+tab. Login or verification prompts may require manual completion.
 
-OurDomain Amsterdam Diemen and Amsterdam South East monitors are included, initially paused. Select one
+Use **Fill application form** to fill an application already open in the active tab.
+Canvas fields use explicit mappings to keep applicant, employer and emergency-contact
+details separate. Existing entries are preserved except repeated applicant birth-date
+fields, which are synchronized with your saved date. Consent agreements and final
+application submission remain manual. Other supported sites use common English/Dutch
+labels and autocomplete attributes; unusual or embedded fields may need manual entry.
+
+## Monitor supported housing websites
+
+OurDomain Amsterdam Diemen, Amsterdam South East, and Canvas Rotterdam Blaak monitors are included, initially paused. Select one
 and press **Check now** to inspect the rule, or **Start watching** to monitor it.
 SpotAlert opens or reuses a tab in your current Chrome profile.
 
@@ -115,17 +126,12 @@ you to approve the added `offscreen` permission when reloading this update.
 Desktop notification delivery also depends on your operating system settings;
 delivery failures are recorded in activity.
 
-Use **Snooze alerts** for 15 minutes, 30 minutes, or one hour, or **Resume alerts**.
-Monitoring keeps running during snooze. New arrivals are held until alerts
-resume and only reported if they remain available. A pop-up also has a
-15-minute snooze button. Explicit test notifications bypass snooze.
-
 **Pause monitoring** stops refreshes and leaves the website tab open.
 
 ## Supported websites
 
 The workspace lists known websites with built-in availability rules. Currently,
-**OurDomain Amsterdam Diemen** and **OurDomain Amsterdam South East** are supported. There is no current-tab discovery,
+**OurDomain Amsterdam Diemen**, **OurDomain Amsterdam South East**, and **Canvas Rotterdam Blaak** are supported. There is no current-tab discovery,
 custom-site creation, or element picker. Switching tabs does not change which
 website is monitored.
 
@@ -213,3 +219,17 @@ The older HTTP/API checker and TUI remain available as
 persistent Chrome profile; their former `extension` mode now directs users to
 the standalone app. The native bridge modules remain for compatibility tests
 and are not used by the standalone extension.
+
+Notification settings are grouped in the **Notifications** tab: independent global pop-up and desktop alerts, sound, test alerts. Changes take effect without pausing monitoring. You can save a phone number and email destination separately from application details; SMS delivery is not implemented yet. Resend email delivery runs directly in the extension.
+
+The **Personal information** tab contains your application details, readiness badge, and the Fill application form action. Unsaved edits remain intact during monitoring refreshes.
+
+### Resend email alerts
+
+Reload the extension, then open **Notifications**. Enter your recipient, paste your Resend API key, enable email, and save. The sender defaults to `onboarding@resend.dev`, which can only email the address registered with Resend. Use a sender from a verified domain for other recipients. Click **Send test email** to check delivery.
+
+Emails are sent directly by the extension’s background worker to Resend; no local bridge or Python process is needed. The key is saved in Chrome local storage, separate from rules and exports, and is not included in extension source or the ZIP. Chrome must keep running; closing the panel is fine. Pop-up, desktop, sound, and email channels have independent global switches. Provider failures appear in activity without changing successful availability results. Failed sends are not automatically retried. Requests use Resend idempotency keys to prevent duplicate sends of the same alert.
+
+Notification settings apply to every monitored location. Availability pop-ups also appear on open supported housing website pages, including while the panel is closed. Recent alerts (up to ten minutes old) survive page reloads until dismissed; dismissal is shared across website tabs. Reload existing website tabs after reloading the extension to install its page pop-up script.
+
+Canvas Rotterdam Blaak is monitored through its [RentCafe floor-plan portal](https://canvas-world.securerc.co.uk/onlineleasing/andre-van-der-louwbrug-4-rotterdam-3011-wm/floorplans.aspx), linked from the [Canvas location page](https://www.canvas-world.com/nl/locations/netherlands/rotterdam/blaak). The marketing page’s permanent “View apartment” links are not availability signals. The reader supports RentCafe Apply/Availability cells, including collapsed floorplans and responsive duplicates. Canvas also receives the global notifications, filters, application details, and debug capture controls. If Chrome shows a verification prompt, open the affected tab and complete it before checking again.

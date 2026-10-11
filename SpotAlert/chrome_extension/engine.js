@@ -1,8 +1,9 @@
 import {ALARM_PREFIX, STORAGE_KEY, defaultMonitor, evaluateRule, sitePattern, siteError, errorKind, newListings, listingKey, safeListingUrl, samePage, inMonitoringHours, nextMonitoringTime, retrySeconds, SUPPORTED_SITES, validateSupportedMonitor, validateMonitor} from "./core.js";
-import {PROFILE_KEY, validateProfile, fillApplicationForm} from "./profile.js";
+import {PROFILE_KEY, validateProfile, fillApplicationForm, selectMoveInDate, startCanvasApplication} from "./profile.js";
 import {inspectApplicationPage} from "./debug.js";
+import {EMAIL_KEY, sendEmailAlert} from "./email.js";
 import {playAlertSound} from "./alerts.js";
-import {openApplication, readPage} from "./page.js";
+import {openApplication, readPage, canvasBookingLink} from "./page.js";
 
 /** Persisted scheduling and page checks. No native process or timer loop. */
 export function createEngine(api, now = () => Date.now(), timers = globalThis) {
@@ -67,6 +68,9 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       value.debug ||= {enabled: false, captures: [], seen: {}};
       for (const capture of value.debug.captures || []) if (capture.status === "opening") { capture.status = "error"; capture.error = "Chrome restarted before capture completed."; }
       const previous = value.monitors || [];
+      value.alertPreferences ||= {notify: previous.length ? previous.some(m => m.notify) : true, sound: previous.some(m => m.sound)};
+      value.alertPreferences.popup ??= value.alertPreferences.notify;
+      value.alertPreferences.desktop ??= value.alertPreferences.notify;
       value.monitors = SUPPORTED_SITES.map((site) => {
         const existing = previous.find((monitor) => monitor.id === site.id && monitor.url === site.url)
           || previous.find((monitor) => monitor.url === site.url);
@@ -83,6 +87,8 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
           monitor.lastDurationMs = null;
           history(monitor, {kind: "updated", message: "South East rule corrected to read application buttons."});
         }
+        monitor.snoozedUntil = null;
+        Object.assign(monitor, value.alertPreferences);
         return monitor;
       });
       const retained = new Set(value.monitors.map((monitor) => monitor.id));
@@ -129,6 +135,10 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     if (input.id && input.id !== site.id) throw new Error("Choose a supported website from the list.");
     clearFastTimer(site.id); cancel(site.id); await api.alarms.clear(alarmName(site.id));
     return mutate((value) => {
+      if (config.notify !== value.alertPreferences?.notify) {
+        value.alertPreferences = {notify: config.notify, popup: config.notify, desktop: config.notify, sound: config.sound};
+      } else value.alertPreferences = {...value.alertPreferences, sound: config.sound};
+      for (const item of value.monitors) Object.assign(item, value.alertPreferences);
       const existing = find(value, site.id);
       const monitor = {
         ...existing, ...config,
@@ -276,6 +286,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       const evaluated = evaluateRule(result.samples, monitor.rule, monitor.filters);
       let alert = null;
       if (controller.signal.aborted) return;
+      const emailEnabled = Boolean((await api.storage.local.get(EMAIL_KEY))[EMAIL_KEY]?.enabled);
       const accepted = await patchRun(id, generation, (current) => {
         const previousTexts = current.samples.map((sample) => sample.text);
         const nextSamples = evaluated.matches.map((sample) => ({...sample, text: sample.text.slice(0, 2000), applicationUrl: safeListingUrl(sample.applicationUrl, current.url), pageUrl: safeListingUrl(sample.pageUrl, current.url) || current.url}));
@@ -288,8 +299,8 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
           const latest = eligible.get(key);
           return latest && !(Number.isFinite(sample.arrivalBaselineCount) && Number.isFinite(latest.availableCount) && latest.availableCount <= sample.arrivalBaselineCount);
         }).map(([key, sample]) => ({...eligible.get(key), arrivalBaselineCount: sample.arrivalBaselineCount ?? null}));
-        current.pendingArrivals = current.notify ? pending : [];
-        if (current.notify && pending.length && !(current.snoozedUntil > now())) {
+        current.pendingArrivals = current.notify || emailEnabled ? pending : [];
+        if ((current.notify || emailEnabled) && pending.length && !(current.snoozedUntil > now())) {
           alert = {id: crypto.randomUUID(), at: now(), listings: pending, test: false};
           current.alert = alert;
           current.pendingArrivals = [];
@@ -382,10 +393,76 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     } catch { /* Recreate only if the affected tab no longer exists. */ }
     return open(id);
   }
+  async function fillCanvasApplicant(tabId, profile, signal) {
+    const deadline = Date.now() + 20000;
+    do {
+      const tab = await api.tabs.get(tabId);
+      const url = new URL(tab.url);
+      if (url.hostname !== "canvas-world.securerc.co.uk") return {tabId, moveInMessage: "Check the opened tab to continue the application."};
+      if (/oleapplication\.aspx$/i.test(url.pathname) && url.searchParams.get("stepname") === "intapplicantinfo") {
+        await waitForPage(tabId, signal, false);
+        const ready = (await api.scripting.executeScript({target: {tabId}, func: () => !!document.querySelector('#ProspectFirstName')}))[0]?.result;
+        if (ready) {
+          const result = (await api.scripting.executeScript({target: {tabId}, func: fillApplicationForm, args: [profile]}))[0]?.result;
+          return {tabId, moveInMessage: `Application opened. Filled ${result?.count || 0} empty fields from Personal information. Review the remaining fields and agreements.`};
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 250));
+    } while (Date.now() < deadline);
+    return {tabId, moveInMessage: "The applicant form has not opened yet. Check the tab for a login or verification prompt; use Fill application form once it is open."};
+  }
   async function openListing(id, listingId) {
     const monitor = find(await state(), id);
     const listing = [...(monitor.alert?.listings || []), ...monitor.samples].find((sample) => listingKey(sample) === listingId);
     if (!listing) throw new Error("This listing is no longer in the saved results. Run a new check.");
+    if (new URL(monitor.url).hostname === "canvas-world.securerc.co.uk") {
+      const signal = new AbortController().signal;
+      const tab = await api.tabs.create({url: "about:blank", active: true});
+      await waitForPage(tab.id, signal, false);
+      await api.tabs.update(tab.id, {url: monitor.url});
+      await waitForPage(tab.id, signal, false);
+      const action = (await api.scripting.executeScript({target: {tabId: tab.id}, func: openApplication, args: [listing]}))[0]?.result;
+      if (!action?.opened) throw new Error(action?.reason || "Could not open this floor plan's availability.");
+      // Wait for navigation rather than reading the floor-plan document again.
+      const deadline = Date.now() + 12000;
+      let destination;
+      do {
+        destination = await api.tabs.get(tab.id);
+        if (!/floorplans\.aspx/i.test(new URL(destination.url).pathname)) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } while (Date.now() < deadline);
+      if (/floorplans\.aspx/i.test(new URL(destination.url).pathname)) throw new Error("The availability page did not open. Check the opened tab.");
+      await waitForPage(tab.id, signal, false);
+      const booking = (await api.scripting.executeScript({target: {tabId: tab.id}, func: canvasBookingLink, args: [listing]}))[0]?.result;
+      if (!booking?.url && !booking?.opened) throw new Error(booking?.error || "No Book link found. Check the opened tab.");
+      if (booking.url) await api.tabs.update(tab.id, {url: booking.url, active: true});
+      const bookingDeadline = Date.now() + 12000;
+      do {
+        destination = await api.tabs.get(tab.id);
+        if (/termsandotheritems\.aspx$/i.test(new URL(destination.url).pathname)) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } while (Date.now() < bookingDeadline);
+      if (!/termsandotheritems\.aspx$/i.test(new URL(destination.url).pathname)) throw new Error("The booking form did not open. Check the opened tab.");
+      await waitForPage(tab.id, signal, false);
+      const profile = validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
+      const date = (await api.scripting.executeScript({target: {tabId: tab.id}, func: selectMoveInDate, args: [profile]}))[0]?.result;
+      if (date?.moveInDate) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          await waitForPage(tab.id, signal, false);
+          const currentTab = await api.tabs.get(tab.id);
+          if (!/termsandotheritems\.aspx$/i.test(new URL(currentTab.url).pathname)) return fillCanvasApplicant(tab.id, profile, signal);
+          try {
+            const next = (await api.scripting.executeScript({target: {tabId: tab.id}, world: "MAIN", func: startCanvasApplication, args: [date.moveInDate]}))[0]?.result;
+            if (next?.started) return fillCanvasApplicant(tab.id, profile, signal);
+            return {tabId: tab.id, moveInMessage: next?.message || "Check the application tab to continue."};
+          } catch (error) {
+            if (attempt === 2 || !/frame|context|document|navigation|removed/i.test(error.message)) throw error;
+          }
+        }
+      }
+      return {tabId: tab.id, moveInMessage: date?.moveInMessage || "Could not select a move-in date. Check the booking tab."};
+    }
     const direct = safeListingUrl(listing.applicationUrl, monitor.url);
     if (direct) return (await api.tabs.create({url: direct, active: true})).id;
     const tab = await tabFor(monitor, new AbortController().signal);
@@ -455,7 +532,9 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     if (work.length && !signal.aborted) await patchRun(id, generation, monitor => { monitor.phase = monitor.enabled ? "waiting" : "paused"; });
   }
   async function deliverAlert(id, alert, soundOverride) {
-    const monitor = find(await state(), id);
+    const currentState = await state();
+    const monitor = find(currentState, id);
+    const desktop = alert.test || currentState.alertPreferences?.desktop !== false;
     const sound = soundOverride === undefined ? monitor.sound : Boolean(soundOverride);
     const notificationId = `${id}:${alert.id}`;
     await mutate((value) => {
@@ -471,12 +550,13 @@ ${sample.context || sample.text}
 ${link}`;
     }).join("\n\n").slice(0, 1600) || "This is a test availability alert.";
     const results = await Promise.allSettled([
-      api.notifications.create(notificationId, {type: "basic", iconUrl: api.runtime.getURL("icons/128.png"), title: `${alert.test ? "Test · " : ""}${monitor.name} · ${alert.listings.length || 1} available`, message, silent: true}),
+      desktop ? api.notifications.create(notificationId, {type: "basic", iconUrl: api.runtime.getURL("icons/128.png"), title: `${alert.test ? "Test · " : ""}${monitor.name} · ${alert.listings.length || 1} available`, message, silent: true}) : Promise.resolve({skipped: true}),
       ...(sound ? [playAlertSound(api)] : []),
+      sendEmailAlert(api, alert, `${alert.test ? "Test · " : ""}${monitor.name} · New availability`, message),
     ]);
-    const failures = results.map((result, index) => result.status === "rejected" ? `${index === 0 ? "Desktop notification" : "Alert sound"} failed: ${result.reason.message}` : null).filter(Boolean);
+    const failures = results.map((result, index) => result.status === "rejected" ? `${index === 0 ? "Desktop notification" : sound && index === 1 ? "Alert sound" : "Email"} failed: ${result.reason.message}` : null).filter(Boolean);
     for (const message of failures) await mutate((value) => history(find(value, id), {kind: "warning", message}));
-    return {desktop: results[0].status === "fulfilled", sound: sound ? results[1]?.status === "fulfilled" : false, errors: failures};
+    return {email: results.at(-1).status === "fulfilled" && !results.at(-1).value?.skipped, desktop: desktop && results[0].status === "fulfilled", sound: sound ? results[1]?.status === "fulfilled" : false, errors: failures};
   }
   async function testAlert(id, sound) {
     let alert;
@@ -517,6 +597,18 @@ ${link}`;
   }
   async function dispatch(message) {
     switch (message.type) {
+      case "set-alerts": {
+        if (typeof message.notify !== "boolean" || typeof message.sound !== "boolean") throw new Error("Choose valid notification settings.");
+        if ([message.popup, message.desktop].some(v => v !== undefined && typeof v !== "boolean")) throw new Error("Choose valid notification settings.");
+        await mutate(value => {
+          value.alertPreferences = {notify: message.notify, sound: message.sound, popup: message.popup ?? message.notify, desktop: message.desktop ?? message.notify};
+          for (const monitor of value.monitors) {
+            Object.assign(monitor, value.alertPreferences);
+            if (!monitor.notify) monitor.pendingArrivals = [];
+          }
+        });
+        return state();
+      }
       case "set-debug": {
         if (typeof message.enabled !== "boolean") throw new Error("Choose whether debug capture is enabled.");
         if (!message.enabled) for (const controller of debugRuns.values()) controller.abort();
@@ -541,9 +633,19 @@ ${link}`;
         const profile = validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
         if (!Object.values(profile).some(Boolean)) throw new Error("Save your personal information first.");
         const [tab] = await api.tabs.query({active: true, currentWindow: true});
-        if (!tab?.url || !SUPPORTED_SITES.some(site => new URL(site.url).origin === new URL(tab.url).origin)) throw new Error("Open an OurDomain application form in the active tab, then use SpotAlert’s side panel to fill it.");
+        if (!tab?.url || !SUPPORTED_SITES.some(site => new URL(site.url).origin === new URL(tab.url).origin)) throw new Error("Open a supported housing application form in the active tab, then use SpotAlert’s side panel to fill it.");
         const results = await api.scripting.executeScript({target: {tabId: tab.id}, func: fillApplicationForm, args: [profile]});
-        return results[0]?.result || {count: 0, fields: []};
+        const result = results[0]?.result || {count: 0, fields: []};
+        if (profile.moveInFrom) {
+          const dates = await api.scripting.executeScript({target: {tabId: tab.id}, func: selectMoveInDate, args: [profile]});
+          const date = dates[0]?.result || {count: 0};
+          return {...result, ...date, count: result.count + date.count, fields: [...result.fields, ...(date.count ? ["moveInFrom"] : [])]};
+        }
+        return result;
+      }
+      case "test-email": {
+        const alert = {id: crypto.randomUUID()};
+        return sendEmailAlert(api, alert, "SpotAlert · Test email", "Your SpotAlert Resend connection works. This is a test, not an availability alert.", true);
       }
       case "state": return state();
       case "save": return {id: await save(message.monitor)};
@@ -555,8 +657,14 @@ ${link}`;
       case "preview": return preview(message.monitor);
       case "open": return {tabId: await open(message.id)};
       case "open-affected": return {tabId: await openAffected(message.id)};
-      case "open-listing": return {tabId: await openListing(message.id, message.listingId)};
+      case "open-listing": {
+        const result = await openListing(message.id, message.listingId);
+        return typeof result === "number" ? {tabId: result} : result;
+      }
       case "open-notification": return {tabId: await openNotification(message.notificationId)};
+      case "snooze-all":
+        for (const monitor of (await state()).monitors) await snooze(monitor.id, Number(message.minutes));
+        return state();
       case "snooze": return snooze(message.id, Number(message.minutes));
       case "test-alert": return testAlert(message.id, message.sound);
       default: throw new Error("Unknown SpotAlert command.");

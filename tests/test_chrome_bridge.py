@@ -147,6 +147,9 @@ def test_extension_has_stable_id_and_restricted_permissions():
     assert manifest["host_permissions"] == [
         "https://thisisourdomain.securerc.co.uk/*",
         "https://southeast-thisisourdomain.securerc.co.uk/*",
+        "https://api.resend.com/*",
+        "https://canvas-world.securerc.co.uk/*",
+        "https://www.canvas-world.com/*",
     ]
     assert "nativeMessaging" not in manifest["permissions"]
     assert "sidePanel" in manifest["permissions"]
