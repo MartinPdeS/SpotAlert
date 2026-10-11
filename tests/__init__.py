@@ -1,0 +1,1 @@
+"""SpotAlert test suite."""

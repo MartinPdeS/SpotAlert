@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SpotAlert</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="#" aria-label="SpotAlert home"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#78e0ba"/><path d="M6 17h5l3-8 5 15 3-7h4" fill="none" stroke="#10271d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>SpotAlert</span></a>
+    <div class="header-actions"><button id="stop-all" class="danger-button" disabled>Stop all</button>
+    <button id="expand" class="icon-button" title="Open full workspace" aria-label="Open full workspace"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M10 4H4v16h16v-6"/></svg></button>
+    </div>
+  </header>
+  <main>
+    <section class="metrics" aria-label="Monitoring totals">
+      <div><span class="metric-label">Watching</span><strong id="active-count">0</strong></div>
+      <div><span class="metric-label">Available websites</span><strong id="available-count">0</strong></div>
+      <div><span class="metric-label">Available apartments</span><strong id="apartment-count">0</strong><span id="apartment-count-note" class="metric-note" hidden>Minimum · unit counts unknown</span></div>
+      <div><span class="metric-label">Checks</span><strong id="check-count">0</strong></div>
+    </section>
+    <label class="compact-toggle checkbox-label"><input id="compact-view" type="checkbox"> Compact view</label>
+    <div class="workspace">
+      <aside class="watchlist">
+        <div class="section-heading"><h2>Supported websites <span id="monitor-count" class="count">0</span></h2></div>
+        <div id="monitors" class="monitor-list" aria-label="Supported websites"></div>
+        <section class="personal-section" aria-labelledby="personal-title">
+          <h2 id="personal-title">Application details</h2>
+          <span id="application-readiness" class="pill" role="status">Details needed</span>
+          <p id="readiness-description" class="helper"></p>
+          <p class="helper">Prepare your contact details for application forms.</p>
+          <button id="personal-info" class="secondary-button">Personal information</button>
+          <button id="fill-application" class="text-button">Fill application form</button>
+        </section>
+        <details class="debug-section"><summary>Debug capture <span id="debug-count" class="count">0</span></summary>
+          <label class="checkbox-label"><input id="debug-mode" type="checkbox"> Open and capture application links</label>
+          <p class="helper">Opens direct links for available listings in background tabs, once per availability. Opening a link may start a reservation. Saves page text and form structure, excluding entered field values; it does not fill or submit forms.</p>
+          <p id="debug-status" class="helper">Debug capture is off.</p>
+          <div class="debug-actions"><button id="export-debug" class="secondary-button" disabled>Export captures</button><button id="clear-debug" class="text-button" disabled>Clear captures</button></div>
+          <div id="debug-captures"></div>
+        </details>
+        <button id="export" class="text-button export-button">↓ Export rules as JSON</button>
+      </aside>
+      <section id="detail" class="detail" aria-label="Selected monitor">
+        <div class="empty-state"><h2>Select a website</h2></div>
+      </section>
+    </div>
+  </main>
+  <dialog id="personal-dialog" aria-labelledby="personal-dialog-title">
+    <form id="personal-form">
+      <div class="section-heading"><h2 id="personal-dialog-title">Personal information</h2><button type="button" id="close-personal" class="icon-button" aria-label="Close personal information">×</button></div>
+      <p class="helper">Saved in this Chrome profile. Used only when you press Fill application form. Review the completed form before submitting.</p>
+      <div class="form-row"><label>First name<input id="personal-firstName" autocomplete="given-name" maxlength="200"></label><label>Last name<input id="personal-lastName" autocomplete="family-name" maxlength="200"></label></div>
+      <label>Email<input id="personal-email" type="email" autocomplete="email" maxlength="200"></label>
+      <label>Phone<input id="personal-phone" type="tel" autocomplete="tel" maxlength="200"></label>
+      <label>Street address<input id="personal-address" autocomplete="street-address" maxlength="200"></label>
+      <div class="form-row"><label>Postal code<input id="personal-postalCode" autocomplete="postal-code" maxlength="200"></label><label>City<input id="personal-city" autocomplete="address-level2" maxlength="200"></label></div>
+      <p id="personal-error" class="form-error" role="alert" hidden></p>
+      <div class="editor-actions"><button type="button" id="clear-personal" class="secondary-button">Delete saved details</button><button type="submit" class="primary-button">Save personal information</button></div>
+    </form>
+  </dialog>
+  <dialog id="editor" aria-labelledby="editor-title">
+    <form id="monitor-form">
+      <div class="section-heading"><div><h2 id="editor-title">New monitor</h2></div><button type="button" id="close-editor" class="icon-button" aria-label="Close editor">×</button></div>
+      <input type="hidden" id="monitor-id">
+      <label>Monitor name<input id="monitor-name" readonly maxlength="100" required placeholder="e.g. OurDomain · Amsterdam Diemen"></label>
+      <label>Page URL<input id="monitor-url" readonly type="url" required placeholder="https://…"></label>
+      <div class="form-row"><label>Read from<select id="rule-type"><option value="css">CSS elements</option><option value="text">Whole page text</option></select></label><label>Refresh interval<select id="interval"><option value="5">5 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="300" selected>5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option></select></label></div>
+      <label id="selector-label">CSS selector<div class="input-action"><input id="rule-selector" placeholder=".availability" spellcheck="false"></div></label>
+      <div class="form-row"><label>Available when text<select id="rule-mode"><option value="contains">contains</option><option value="equals">equals</option><option value="not_equals">does not equal</option></select></label><label>Expected text<input id="rule-expected" required maxlength="500" placeholder="Available"></label></div>
+      <fieldset class="settings-group"><legend>Apartment filters</legend>
+        <div class="type-filters"><label class="checkbox-label"><input type="checkbox" name="apartment-type" value="studio"> Studios</label><label class="checkbox-label"><input type="checkbox" name="apartment-type" value="1-bedroom"> 1 bedroom</label><label class="checkbox-label"><input type="checkbox" name="apartment-type" value="2-bedroom"> 2 bedrooms</label><label class="checkbox-label"><input type="checkbox" name="apartment-type" value="3-plus"> 3+ bedrooms</label></div>
+        <details><summary>Specific floor plans</summary><div id="floorplan-filters" class="floorplan-filters"></div></details>
+        <p class="helper">No selections means all apartments. Type and floor-plan filters both apply.</p>
+      </fieldset>
+      <fieldset class="settings-group"><legend>Monitoring hours</legend>
+        <label class="checkbox-label"><input type="checkbox" id="hours-enabled"> Only monitor during these hours</label>
+        <div class="form-row"><label>From<input id="hours-start" type="time" value="08:00" required></label><label>Until<input id="hours-end" type="time" value="22:00" required></label></div>
+        <label>Timezone<input id="hours-timezone" required placeholder="Europe/Amsterdam"></label>
+      </fieldset>
+      <label class="checkbox-label"><input type="checkbox" id="notify" checked> Show pop-up and desktop notification when availability appears</label>
+      <label class="checkbox-label"><input type="checkbox" id="alert-sound"> Play a sound with alerts</label>
+      <button type="button" id="editor-test-alert" class="secondary-button">Test notification</button>
+      <p class="helper">Matching ignores case and extra spaces.</p>
+      <div id="preview-result" class="preview-result" hidden></div>
+      <p id="form-error" class="form-error" role="alert" hidden></p>
+      <div class="editor-actions"><button type="button" id="preview-rule" class="secondary-button">Preview rule</button><button type="submit" class="primary-button">Save monitor</button></div>
+      <p class="helper">Saving pauses monitoring.</p>
+    </form>
+  </dialog>
+
+  <dialog id="availability-popup" aria-labelledby="availability-title" aria-describedby="availability-site">
+    <h2 id="availability-title">New availability</h2>
+    <p id="availability-site" class="muted"></p>
+    <div id="availability-listings" class="preview-result"></div>
+    <button id="popup-snooze" class="text-button">Snooze alerts for 15 minutes</button>
+    <div class="editor-actions"><button id="dismiss-availability" class="secondary-button">Dismiss</button><button id="open-availability" class="primary-button">Open listing ↗</button></div>
+  </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

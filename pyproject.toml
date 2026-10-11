@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spotalert"
+version = "0.1.0"
+description = "Monitor studio-rental availability and alert you when a studio opens."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Martin Poinsinet de Sivry-Houle" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+]
+dependencies = [
+    "beautifulsoup4>=4.12,<5",
+    "httpx>=0.27,<1",
+    "platformdirs>=4.0,<5",
+    "playwright>=1.50,<2",
+    "textual>=1.0,<2",
+]
+keywords = ["alerts", "availability", "rental", "studio", "monitoring"]
+
+[project.optional-dependencies]
+testing = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+dev = [
+    "pre-commit>=3.7",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+spotalert = "SpotAlert.cli:main"
+
+[project.urls]
+Repository = "https://github.com/MartinPdeS/SpotAlert"
+
+[tool.setuptools.packages.find]
+include = ["SpotAlert*"]
+
+[tool.setuptools.package-data]
+SpotAlert = ["chrome_extension/*.json", "chrome_extension/*.js", "chrome_extension/*.html", "chrome_extension/*.css", "chrome_extension/icons/*", "chrome_extension/sounds/*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = [
+    "-ra",
+    "--strict-config",
+    "--strict-markers",
+    "--cov=SpotAlert",
+    "--cov-report=term-missing",
+]
+testpaths = ["tests"]

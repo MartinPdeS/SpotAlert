@@ -1,0 +1,306 @@
+"""Verify apartment filters, per-listing alerts, audio and recovery in Chromium."""
+
+import json
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from playwright.sync_api import expect, sync_playwright
+
+ROOT = Path(__file__).resolve().parents[1]
+ARTIFACTS = ROOT / "artifacts" / "extension"
+URL = "https://thisisourdomain.securerc.co.uk/onlineleasing/ourdomain-amsterdam-diemen2/floorplans.aspx"
+
+
+def main():
+    ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    state = {"a": False, "b": False, "mode": "normal", "reverse": False}
+
+    def html():
+        if state["mode"] == "verification":
+            return '<title>Just a moment...</title><div id="challenge-running">Verify you are human</div>'
+        if state["mode"] == "login":
+            return '<title>Sign in</title><input type="password"><h1>Please sign in</h1>'
+        rows = []
+        for key, number, name, beds, rent in [
+            ("a", 101, "Superior Studio A", "Studio", "€ 1.050"),
+            ("b", 102, "1 Bedroom B", "1", "€ 1.500"),
+        ]:
+            action = (
+                f'<a href="availableunits.aspx?myFloorPlanId={number}">Apply Now</a>'
+                if state[key]
+                else f'<button onclick="void(\'myFloorPlanId={number}\')">Get Notified</button>'
+            )
+            rows.append(f'''<tr data-selenium-id="FProw_{number}">
+                <td data-selenium-id="FPlan_{number}">{name}</td>
+                <td data-selenium-id="Beds_{number}">{beds}</td>
+                <td data-selenium-id="Baths_{number}">1</td>
+                <td data-selenium-id="Rent_{number}">{rent}</td>
+                <td data-selenium-id="Availability_{number}">{action}</td>
+                <td style="display:none"><img id="FP_Image_{number}"></td></tr>''')
+        if state["reverse"]:
+            rows.reverse()
+        return '<title>OurDomain fixture</title><table>' + "".join(rows) + "</table>"
+
+    def route(request):
+        if "availableunits.aspx" in request.request.url:
+            request.fulfill(content_type="text/html; charset=utf-8", body='''<title>Application</title><h1>Application page</h1><form onsubmit="window.submitted=true;return false">
+                <label>First name<input id="given" name="firstName" autocomplete="given-name"></label>
+                <label>Last name<input id="surname" name="lastName"></label>
+                <label>Email<input id="mail" type="email" autocomplete="email" value="existing@example.com"></label>
+                <label>Phone<input id="phone" type="tel" autocomplete="tel"></label>
+                <label>Street address<input id="address" autocomplete="street-address"></label>
+                <label>Postal code<input id="postal" autocomplete="postal-code"></label>
+                <label>City<input id="city" autocomplete="address-level2"></label>
+                <label>Confirm email<input id="confirm" type="email"></label>
+                <input id="secret" type="password"><input id="hidden-name" type="hidden" name="firstName">
+                <input id="readonly" name="lastName" readonly><input id="disabled" name="firstName" disabled>
+                <label><input id="consent" type="checkbox">Agree to terms</label><button type="submit">Submit</button>
+                </form><script>window.events=0;document.addEventListener("input",()=>window.events++);</script>''' )
+        else:
+            request.fulfill(content_type="text/html; charset=utf-8", body=html())
+
+    with TemporaryDirectory(prefix="spotalert-features-", dir="/private/tmp") as temporary:
+        temporary = Path(temporary)
+        extension = temporary / "extension"
+        shutil.copytree(ROOT / "SpotAlert/chrome_extension", extension)
+        with sync_playwright() as playwright:
+            def launch():
+                return playwright.chromium.launch_persistent_context(
+                    str(temporary / "profile"), channel="chromium", headless=True,
+                    viewport={"width": 1000, "height": 1000},
+                    args=[f"--disable-extensions-except={extension}", f"--load-extension={extension}"],
+                    ignore_default_args=["--disable-extensions"],
+                )
+
+            context = launch()
+            errors = []
+            try:
+                context.route("https://thisisourdomain.securerc.co.uk/**", route)
+                context.route("https://southeast-thisisourdomain.securerc.co.uk/**", route)
+                listing_page = context.new_page()
+                listing_page.goto(URL)
+                worker = context.service_workers[0] if context.service_workers else context.wait_for_event("serviceworker")
+                extension_id = worker.url.split("/")[2]
+                panel = context.new_page()
+                panel.on("pageerror", lambda error: errors.append(str(error)))
+                panel.goto(f"chrome-extension://{extension_id}/panel.html")
+
+                def dismiss():
+                    if panel.locator("#availability-popup").is_visible():
+                        panel.locator("#dismiss-availability").click()
+                    expect(panel.locator("#availability-popup")).not_to_be_visible()
+
+                def check():
+                    before = int(panel.locator("#check-count").inner_text())
+                    panel.get_by_role("button", name="↻ Check now", exact=True).click()
+                    expect(panel.locator("#check-count")).to_have_text(str(before + 1), timeout=30000)
+
+                def edit():
+                    panel.get_by_role("button", name="Configure monitor", exact=True).click()
+                    expect(panel.locator("#editor")).to_be_visible()
+                    if not panel.locator("#floorplan-filters").is_visible():
+                        panel.get_by_text("Specific floor plans", exact=True).click()
+
+                def save():
+                    panel.get_by_role("button", name="Save monitor", exact=True).click()
+                    expect(panel.locator("#editor")).not_to_be_visible()
+
+                panel.get_by_role("button", name="▶ Start watching", exact=True).click()
+                expect(panel.locator("#check-count")).to_have_text("1", timeout=30000)
+                state["a"] = True
+                check()
+                expect(panel.locator("#availability-popup")).to_be_visible()
+                expect(panel.locator("#availability-listings")).to_contain_text("Superior Studio A")
+                expect(panel.locator("#availability-listings")).to_contain_text("€ 1.050")
+                expect(panel.locator("#availability-listings a")).to_have_attribute("href", URL.replace("floorplans.aspx", "availableunits.aspx?myFloorPlanId=101"))
+                with context.expect_page() as application:
+                    panel.locator("#availability-listings a").click()
+                expect(application.value.locator("h1")).to_have_text("Application page")
+                dismiss()
+                state["b"] = True
+                check()
+                expect(panel.locator("#availability-listings")).to_contain_text("1 Bedroom B")
+                expect(panel.locator("#availability-listings")).not_to_contain_text("Superior Studio A")
+                panel.screenshot(path=str(ARTIFACTS / "listing-alert.png"))
+                dismiss()
+                state["reverse"] = True
+                check()
+                expect(panel.locator("#availability-popup")).not_to_be_visible()
+                edit()
+                panel.locator('[name="apartment-type"][value="studio"]').check()
+                panel.locator('[name="floorplan"][value="floorplan:101"]').check()
+                panel.locator("#preview-rule").click()
+                expect(panel.locator("#preview-result")).to_contain_text("Available · 1/2 elements matched")
+                save()
+                panel.get_by_role("button", name="▶ Start watching", exact=True).click()
+                expect(panel.locator("#check-count")).to_have_text("5", timeout=30000)
+                expect(panel.locator("#availability-listings")).to_contain_text("Superior Studio A")
+                expect(panel.locator("#availability-listings")).not_to_contain_text("1 Bedroom B")
+                dismiss()
+                expect(panel.locator(".sample").filter(has_text="1 Bedroom B")).to_contain_text("Filtered out")
+                expect(panel.locator(".sample").first).to_contain_text("Superior Studio A")
+                panel.get_by_role("button", name="Available", exact=True).click()
+                expect(panel.locator(".sample")).to_have_count(1)
+                expect(panel.locator(".sample")).to_contain_text("Superior Studio A")
+                panel.get_by_role("button", name="All", exact=True).click()
+                edit()
+                panel.locator("#alert-sound").check()
+                panel.locator("#editor-test-alert").click()
+                expect(panel.locator("#availability-title")).to_have_text("Test notification")
+                expect(panel.locator("#editor-test-alert")).to_be_enabled(timeout=15000)
+                # The real offscreen document must be able to play audio.
+                panel.wait_for_function("async () => (await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT']})).length === 1")
+                sound = worker.evaluate("async () => chrome.runtime.sendMessage({target:'audio',type:'play-sound'})")
+                assert sound.get("ok"), sound
+                dismiss()
+                save()
+                stored = worker.evaluate("async () => (await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors[0]")
+                assert stored["sound"] is True
+                assert stored["filters"] == {"types": ["studio"], "floorplans": ["floorplan:101"]}
+                edit()
+                panel.locator("#alert-sound").uncheck()
+                panel.locator('[name="apartment-type"][value="studio"]').uncheck()
+                panel.locator('[name="floorplan"][value="floorplan:101"]').uncheck()
+                save()
+                panel.get_by_role("combobox", name="Snooze alerts", exact=True).select_option("15")
+                expect(panel.get_by_role("combobox", name="Snooze alerts", exact=True).locator("option").first).to_contain_text("Snoozed until")
+                panel.get_by_role("button", name="▶ Start watching", exact=True).click()
+                expect(panel.locator("#check-count")).to_have_text("6", timeout=30000)
+                expect(panel.locator("#availability-popup")).not_to_be_visible()
+                state["a"] = False
+                check()
+                panel.get_by_role("combobox", name="Snooze alerts", exact=True).select_option("0")
+                expect(panel.get_by_role("combobox", name="Snooze alerts", exact=True).locator("option").first).to_have_text("Snooze alerts…")
+                check()
+                expect(panel.locator("#availability-listings")).to_contain_text("1 Bedroom B")
+                expect(panel.locator("#availability-listings")).not_to_contain_text("Superior Studio A")
+                panel.locator("#popup-snooze").click()
+                expect(panel.locator("#availability-popup")).not_to_be_visible()
+                panel.get_by_role("combobox", name="Snooze alerts", exact=True).select_option("0")
+                expect(panel.get_by_role("combobox", name="Snooze alerts", exact=True).locator("option").first).to_have_text("Snooze alerts…")
+                edit()
+                hour = datetime.now(timezone.utc).hour
+                start = f"{(hour + 2) % 24:02}:00"
+                end = f"{(hour + 3) % 24:02}:00"
+                panel.locator("#hours-enabled").check()
+                panel.locator("#hours-start").fill(start)
+                panel.locator("#hours-end").fill(end)
+                panel.locator("#hours-timezone").fill("UTC")
+                panel.screenshot(path=str(ARTIFACTS / "monitor-settings.png"))
+                save()
+                before = int(panel.locator("#check-count").inner_text())
+                panel.get_by_role("button", name="▶ Start watching", exact=True).click()
+                expect(panel.locator(".activity-caption")).to_have_text("Waiting for monitoring hours")
+                expect(panel.locator("#check-count")).to_have_text(str(before))
+                check()
+                dismiss()
+                state["mode"] = "verification"
+                panel.get_by_role("button", name="↻ Check now", exact=True).click()
+                expect(panel.locator(".activity-caption")).to_have_text("Verification required", timeout=30000)
+                expect(panel.locator(".error-box")).to_contain_text("OurDomain · Amsterdam Diemen")
+                affected_id = worker.evaluate("async () => (await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors[0].tabId")
+                panel.get_by_role("button", name="Open affected tab ↗", exact=True).click()
+                assert worker.evaluate("async id => (await chrome.tabs.get(id)).active", affected_id)
+                state["mode"] = "login"
+                panel.get_by_role("button", name="↻ Check now", exact=True).click()
+                expect(panel.locator(".activity-caption")).to_have_text("Sign in required", timeout=30000)
+                state["mode"] = "normal"
+                check()
+                expect(panel.locator(".error-box")).to_have_count(0)
+                edit()
+                panel.locator("#rule-selector").fill("[")
+                panel.locator("#preview-rule").click()
+                expect(panel.locator("#form-error")).to_contain_text("Invalid CSS selector")
+                panel.locator("#close-editor").click()
+                panel.get_by_role("button", name="Ⅱ Pause monitoring", exact=True).click()
+                expect(panel.locator("#active-count")).to_have_text("0")
+                panel.get_by_role("button", name="Personal information", exact=True).click()
+                for field, value in {"firstName": "Alex", "lastName": "Example", "email": "alex@example.com", "phone": "+31612345678", "address": "Example street 1", "postalCode": "1234 AB", "city": "Amsterdam"}.items():
+                    panel.locator(f"#personal-{field}").fill(value)
+                panel.get_by_role("button", name="Save personal information", exact=True).click()
+                expect(panel.locator("#personal-dialog")).not_to_be_visible()
+                expect(panel.locator("#application-readiness")).to_have_text("Contact details ready")
+                application_page = context.new_page()
+                application_page.goto(URL.replace("floorplans.aspx", "availableunits.aspx?myFloorPlanId=101"))
+                application_id = worker.evaluate("async () => (await chrome.tabs.query({})).find(tab => tab.url.includes('availableunits.aspx')).id")
+                worker.evaluate("async id => chrome.tabs.update(id,{active:true})", application_id)
+                # There may already be an application tab from the earlier link test.
+                application_page = next(page for page in context.pages if page.url == URL.replace("floorplans.aspx", "availableunits.aspx?myFloorPlanId=101"))
+                panel.get_by_role("button", name="Fill application form", exact=True).click()
+                expect(application_page.locator("#given")).to_have_value("Alex")
+                expect(application_page.locator("#surname")).to_have_value("Example")
+                expect(application_page.locator("#mail")).to_have_value("existing@example.com")
+                expect(application_page.locator("#phone")).to_have_value("+31612345678")
+                expect(application_page.locator("#city")).to_have_value("Amsterdam")
+                for selector in ["#confirm", "#secret", "#hidden-name", "#readonly", "#disabled"]:
+                    expect(application_page.locator(selector)).to_have_value("")
+                expect(application_page.locator("#consent")).not_to_be_checked()
+                assert application_page.evaluate("window.submitted !== true && window.events === 6")
+                panel.get_by_role("button", name="Fill application form", exact=True).click()
+                expect(panel.locator("#toast")).to_contain_text("No empty matching fields")
+                assert application_page.evaluate("window.events === 6")
+                panel.get_by_role("button", name="Personal information", exact=True).click()
+                panel.screenshot(path=str(ARTIFACTS / "personal-information.png"))
+                panel.locator("#close-personal").click()
+                panel.locator(".debug-section > summary").click()
+                expect(panel.locator("#debug-mode")).not_to_be_checked()
+                panel.locator("#debug-mode").check()
+                expect(panel.locator("#debug-mode")).to_be_enabled()
+                check()
+                expect(panel.locator(".debug-capture > summary").first).to_contain_text("· form", timeout=30000)
+                expect(panel.get_by_role("button", name="↻ Check now", exact=True)).to_be_enabled()
+                expect(panel.locator("#debug-count")).to_have_text("1")
+                captures = worker.evaluate("async () => (await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].debug.captures")
+                assert all(capture["snapshot"]["pageKind"] == "form" for capture in captures)
+                assert any(field["id"] == "given" for field in captures[0]["snapshot"]["fields"])
+                assert "existing@example.com" not in json.dumps(captures)
+                assert all("value" not in field for capture in captures for field in capture["snapshot"]["fields"])
+                tab_count = len(context.pages)
+                check()
+                assert len(context.pages) == tab_count, "Debug reopened unchanged links"
+                panel.locator(".debug-capture > summary").first.click()
+                expect(panel.locator(".debug-output").first).to_contain_text('"fields"')
+                panel.screenshot(path=str(ARTIFACTS / "debug-capture.png"), full_page=True)
+                with panel.expect_download() as download:
+                    panel.locator("#export-debug").click()
+                exported = json.loads(Path(download.value.path()).read_text())
+                assert len(exported["captures"]) == 1
+                assert all("tabId" not in capture for capture in exported["captures"])
+                panel.locator("#clear-debug").click()
+                expect(panel.locator("#debug-count")).to_have_text("0")
+                check()
+                expect(panel.locator("#debug-count")).to_have_text("0")
+                panel.locator("#debug-mode").uncheck()
+                expect(panel.locator("#debug-mode")).to_be_enabled()
+
+                assert not errors, errors
+            finally:
+                context.close()
+            context = launch()
+            try:
+                panel = context.new_page()
+                panel.goto(f"chrome-extension://{extension_id}/panel.html")
+                edit()
+                expect(panel.locator("#hours-enabled")).to_be_checked()
+                expect(panel.locator("#hours-timezone")).to_have_value("UTC")
+                expect(panel.locator("#alert-sound")).not_to_be_checked()
+                panel.locator("#close-editor").click()
+                expect(panel.locator("#active-count")).to_have_text("0")
+                panel.get_by_role("button", name="Personal information", exact=True).click()
+                expect(panel.locator("#personal-firstName")).to_have_value("Alex")
+                expect(panel.locator("#personal-email")).to_have_value("alex@example.com")
+                panel.get_by_role("button", name="Delete saved details", exact=True).click()
+                expect(panel.locator("#personal-firstName")).to_have_value("")
+                expect(panel.locator("#application-readiness")).to_have_text("Details needed")
+                panel.locator("#close-personal").click()
+                panel.get_by_role("button", name="Personal information", exact=True).click()
+                expect(panel.locator("#personal-email")).to_have_value("")
+            finally:
+                context.close()
+    print("Feature browser test passed: filters, individual arrivals, application links, test alerts, offscreen sound, snooze, monitoring hours, verification/login recovery, personal information, form filling without submission, debug capture/export, and persistence.")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,478 @@
+import {STORAGE_KEY, availabilityArrivals, siteError, listingKey, safeListingUrl, sitePattern, validateMonitor} from "./core.js";
+
+import {UI_KEY, applicationReadiness, freshness, availabilityTotals} from "./ui.js";
+import {PROFILE_KEY, PROFILE_FIELDS} from "./profile.js";
+
+const $ = (selector) => document.querySelector(selector);
+let value = {monitors: []};
+let selectedId = null;
+let showAllSamples = false;
+let historyFilter = "all";
+let listingFilter = "all";
+let technicalOpen = false;
+let toastTimer;
+let loadingState = false;
+const availabilityQueue = [];
+let activeAvailability = null;
+let reloadState = false;
+let personalProfile = {};
+let compactView = false;
+
+function element(tag, attributes = {}, ...children) {
+  const item = document.createElement(tag);
+  for (const [key, attr] of Object.entries(attributes)) {
+    if (key === "class") item.className = attr;
+    else if (key === "onclick") item.addEventListener("click", attr);
+    else item.setAttribute(key, attr);
+  }
+  for (const child of children.flat(Infinity)) {
+    if (child !== undefined && child !== null && typeof child !== "boolean") item.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return item;
+}
+const busy = (monitor) => ["queued", "refreshing", "reading", "capturing"].includes(monitor.phase);
+const clock = (timestamp) => timestamp ? new Date(timestamp).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"}) : "—";
+const interval = (seconds) => seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${seconds / 60}m` : `${seconds / 3600}h`;
+const domain = (url) => { try { return new URL(url).hostname; } catch { return url; } };
+const selected = () => value.monitors.find((monitor) => monitor.id === selectedId);
+
+async function request(message) {
+  const response = await chrome.runtime.sendMessage(message);
+  if (!response?.ok) throw new Error(response?.error || "SpotAlert could not connect to its background worker. Reload the extension.");
+  return response.result;
+}
+function toast(message, error = false) {
+  clearTimeout(toastTimer);
+  const node = $("#toast");
+  node.textContent = message;
+  node.classList.toggle("error", error);
+  node.hidden = false;
+  toastTimer = setTimeout(() => { node.hidden = true; }, error ? 9000 : 4500);
+}
+const guard = (task) => async (event) => {
+  try { await task(event); } catch (error) { toast(error.message, true); }
+};
+async function grant(url) {
+  // Called immediately from a button gesture, before any other awaited API.
+  const granted = await chrome.permissions.request({origins: [sitePattern(url)]});
+  if (!granted) throw new Error("Website access was not granted. This page was not added or inspected.");
+}
+async function loadState() {
+  if (loadingState) { reloadState = true; return; }
+  loadingState = true;
+  try {
+    do {
+      reloadState = false;
+      const [state, preferences] = await Promise.all([request({type: "state"}), chrome.storage.local.get([PROFILE_KEY, UI_KEY])]);
+      value = state;
+      personalProfile = preferences[PROFILE_KEY] || {};
+      compactView = Boolean(preferences[UI_KEY]?.compact);
+      if (!value.monitors.some((monitor) => monitor.id === selectedId)) selectedId = value.monitors[0]?.id || null;
+      render();
+    } while (reloadState);
+  } finally { loadingState = false; }
+}
+function badge(monitor) {
+  if (busy(monitor)) return element("span", {class: "pill busy"}, monitor.phase === "capturing" ? "Capturing" : monitor.phase === "reading" ? "Reading" : monitor.phase === "queued" ? "Queued" : "Refreshing");
+  if (monitor.error) return element("span", {class: "pill error"}, "Check failed");
+  if (monitor.available === true) return element("span", {class: "pill available"}, "● Available");
+  if (monitor.available === false) return element("span", {class: "pill"}, "Not available");
+  return element("span", {class: "pill"}, "Not checked");
+}
+function updateFreshness() {
+  for (const node of document.querySelectorAll("[data-freshness]")) {
+    const monitor = value.monitors.find(item => item.id === node.dataset.freshness);
+    if (!monitor) continue;
+    const result = freshness(monitor);
+    node.textContent = result.text;
+    node.title = result.title;
+    node.classList.toggle("stale", result.stale);
+  }
+}
+function render() {
+  document.body.classList.toggle("compact", compactView);
+  $("#compact-view").checked = compactView;
+  const readiness = applicationReadiness(personalProfile);
+  $("#application-readiness").textContent = readiness.ready ? "Contact details ready" : "Details needed";
+  $("#application-readiness").classList.toggle("available", readiness.ready);
+  $("#readiness-description").textContent = readiness.ready ? "Name, email and phone saved. Review any additional fields on the application." : `Add ${readiness.missing.join(", ")} to prepare your application.`;
+  renderDebug();
+  const totals = availabilityTotals(value.monitors);
+  $("#apartment-count").textContent = `${totals.unknownCounts ? "≥" : ""}${totals.apartments}`;
+  $("#apartment-count-note").hidden = !totals.unknownCounts;
+  $("#apartment-count").title = totals.unknownCounts ? "At least one apartment per available floor plan; some sites do not publish exact unit counts. Totals use the last successful results." : "Published unit counts from the last successful results.";
+  $("#stop-all").disabled = !value.monitors.some(monitor => monitor.enabled || busy(monitor));
+  $("#active-count").textContent = value.monitors.filter((monitor) => monitor.enabled).length;
+  $("#available-count").textContent = totals.websites;
+  $("#check-count").textContent = value.monitors.reduce((sum, monitor) => sum + monitor.checks, 0);
+  $("#monitor-count").textContent = value.monitors.length;
+  $("#monitors").replaceChildren(...value.monitors.map((monitor) => element("button", {
+    class: `monitor-card${monitor.enabled ? " watching" : ""}${monitor.id === selectedId ? " selected" : ""}`,
+    "aria-pressed": String(monitor.id === selectedId),
+    onclick: () => { selectedId = monitor.id; showAllSamples = false; listingFilter = "all"; render(); },
+  },
+  element("span", {class: "monitor-title"}, monitor.name),
+  element("span", {class: "monitor-bottom"}, element("span", {class: "pill"}, monitor.error ? "Check failed" : monitor.enabled ? "Watching" : "Paused"), `${monitor.samples.filter(sample => sample.matched).length} available`),
+  element("span", {class: "freshness", "data-freshness": monitor.id}),
+  monitor.error && element("span", {class: "monitor-error", title: siteError(monitor, monitor.error)}, siteError(monitor, monitor.error)),
+  )));
+  if (!value.monitors.length) $("#monitors").append(element("p", {class: "empty-note"}, "No supported websites are available."));
+  renderDetail();
+  updateFreshness();
+}
+function actionButton(label, type, monitor, className = "secondary-button") {
+  const button = element("button", {class: className, "data-action": type, onclick: guard(async () => {
+    button.disabled = true;
+    try { const result = await request({type, id: monitor.id}); if (type === "test-alert" && result.errors?.length) toast(result.errors.join(" "), true); await loadState(); }
+    finally { button.disabled = false; }
+  })}, label);
+  if (["check", "start"].includes(type) && busy(monitor)) button.disabled = true;
+  return button;
+}
+function renderDetail() {
+  const monitor = selected();
+  const root = $("#detail");
+  const focusedAction = root.contains(document.activeElement) ? document.activeElement.dataset.action : null;
+  root.replaceChildren();
+  if (!monitor) {
+    root.append(element("div", {class: "empty-state"}, element("h2", {}, "Select a website")));
+    return;
+  }
+  root.append(element("div", {class: "detail-head"},
+    element("div", {class: "detail-title"}, element("h2", {}, monitor.name))));
+  root.append(element("button", {class: "text-button detail-url", title: "Open monitored tab", onclick: guard(() => request({type: "open", id: monitor.id}))}, `${monitor.url} ↗`));
+  const toolbar = element("div", {class: "control-row monitor-toolbar"}, actionButton(monitor.enabled ? "Ⅱ Pause monitoring" : "▶ Start watching", monitor.enabled ? "pause" : "start", monitor, "primary-button"), actionButton("↻ Check now", "check", monitor));
+  const refresh = element("select", {id: "refresh-interval", "aria-label": "Refresh interval"});
+  const presets = [[5, "5 seconds"], [30, "30 seconds"], [60, "1 minute"], [300, "5 minutes"], [600, "10 minutes"], [1800, "30 minutes"], [3600, "1 hour"]];
+  if (!presets.some(([seconds]) => seconds === monitor.intervalSeconds)) presets.push([monitor.intervalSeconds, `${monitor.intervalSeconds} seconds`]);
+  refresh.append(...presets.map(([seconds, label]) => element("option", {value: String(seconds)}, label)));
+  refresh.value = String(monitor.intervalSeconds);
+  refresh.addEventListener("change", guard(async () => {
+    refresh.disabled = true;
+    try {
+      await request({type: "set-interval", id: monitor.id, intervalSeconds: Number(refresh.value)});
+      await loadState();
+    } finally { refresh.disabled = false; }
+  }));
+  toolbar.append(element("label", {class: "refresh-control"}, "Refresh every", refresh), element("button", {id: "configure-monitor", class: "small-button", onclick: () => openEditor(monitor)}, "Configure monitor"));
+  root.append(toolbar);
+  const alertControls = element("div", {class: "alert-controls"}, actionButton("Test notification", "test-alert", monitor));
+  const snooze = element("select", {"aria-label": "Snooze alerts"}, element("option", {value: ""}, monitor.snoozedUntil > Date.now() ? `Snoozed until ${clock(monitor.snoozedUntil)}` : "Snooze alerts…"), element("option", {value: "0"}, "Resume alerts"), element("option", {value: "15"}, "15 minutes"), element("option", {value: "30"}, "30 minutes"), element("option", {value: "60"}, "1 hour"));
+  snooze.addEventListener("change", guard(async () => { if (snooze.value !== "") { await request({type: "snooze", id: monitor.id, minutes: Number(snooze.value)}); await loadState(); } }));
+  alertControls.append(snooze);
+  root.append(alertControls);
+  const filterLabels = {studio: "Studios", "1-bedroom": "1 bedroom", "2-bedroom": "2 bedrooms", "3-plus": "3+ bedrooms"};
+  const filterText = (monitor.filters?.types || []).map((type) => filterLabels[type]).join(", ");
+  const floors = monitor.filters?.floorplans?.length || 0;
+  root.append(element("p", {class: "watch-summary"}, filterText || "All apartment types", floors ? ` · ${floors} selected floor ${floors === 1 ? "plan" : "plans"}` : "",
+    monitor.hours?.enabled ? ` · ${monitor.hours.start}–${monitor.hours.end} (${monitor.hours.timeZone})` : ""));
+  let caption = "Monitoring paused";
+  let symbol = "Ⅱ";
+  let sub = "";
+  if (busy(monitor)) { caption = monitor.phase === "capturing" ? "Capturing application page…" : monitor.phase === "reading" ? "Reading availability elements…" : monitor.phase === "queued" ? "Waiting for the previous check…" : "Refreshing browser tab…"; symbol = "↻"; sub = ""; }
+  else if (monitor.error) { caption = {verification: "Verification required", login: "Sign in required", loading: "Page still loading", selector: "Rule needs updating", permission: "Website access required", navigation: "Tab navigated away"}[monitor.errorKind] || "The last check failed"; symbol = "!"; sub = monitor.enabled ? `Retry scheduled after ${monitor.consecutiveErrors || 1} failed ${monitor.consecutiveErrors === 1 ? "check" : "checks"}.` : "Fix the rule or page access, then try again."; }
+  else if (monitor.phase === "waiting-hours" && monitor.enabled) { caption = "Waiting for monitoring hours"; symbol = "◷"; }
+  else if (monitor.enabled) { caption = "Watching for availability"; symbol = "✓"; sub = ""; }
+  root.append(element("div", {class: "activity-line", role: "status"}, element("span", {class: `activity-symbol${busy(monitor) ? " spinning" : ""}`, "aria-hidden": "true"}, symbol), element("div", {}, element("div", {class: "activity-caption"}, caption), sub && element("div", {class: "activity-sub"}, sub))));
+  root.append(element("div", {class: "telemetry"},
+    element("div", {}, element("span", {}, "Last successful check"), element("strong", {}, clock(monitor.lastCheckedAt)), element("span", {class: "freshness", "data-freshness": monitor.id})),
+    element("div", {}, element("span", {}, "Next refresh"), element("strong", {"data-next": monitor.id}, nextLabel(monitor))),
+    element("div", {}, element("span", {}, "Check duration"), element("strong", {}, monitor.lastDurationMs === null ? "—" : `${(monitor.lastDurationMs / 1000).toFixed(1)}s`)),
+  ));
+  if (monitor.error) root.append(element("div", {class: "error-box", role: "alert"}, element("p", {}, siteError(monitor, monitor.error)), actionButton("Open affected tab ↗", "open-affected", monitor)));
+  const technical = element("details", {class: "technical-details"}, element("summary", {}, "Technical details & activity"));
+  technical.open = technicalOpen;
+  technical.addEventListener("toggle", () => { technicalOpen = technical.open; });
+  technical.append(element("section", {class: "detail-section"},
+    element("div", {class: "section-heading"}, element("h3", {}, "Availability rule"), badge(monitor)),
+    element("div", {class: "rule-block"}, element("div", {class: "rule-code"}, monitor.rule.type === "text" ? "document.body.innerText" : monitor.rule.selector), element("div", {class: "rule-meta"},
+      "Available when text ", element("code", {}, {contains: "contains", equals: "equals", not_equals: "does not equal"}[monitor.rule.mode]), " ", element("code", {}, JSON.stringify(monitor.rule.expected)), element("br"),
+      `Case insensitive · Every ${interval(monitor.intervalSeconds)} · ${monitor.notify ? "Notifications on" : "Notifications off"}`)),
+  ));
+  const sampleSection = element("section", {class: "detail-section"});
+  const sampleHeader = element("div", {class: "section-heading"}, element("h3", {}, `Floor plans ${monitor.samples.length ? `· ${monitor.samples.filter((sample) => sample.included !== false).length}/${monitor.samples.length}` : ""}`));
+  const visibleSamples = [...monitor.samples].filter(sample => listingFilter === "all" || (listingFilter === "available" ? sample.matched : sample.apartmentType === listingFilter))
+    .sort((a, b) => Number(Boolean(b.matched)) - Number(Boolean(a.matched)) || a.index - b.index);
+  if (visibleSamples.length > 8) sampleHeader.append(element("button", {class: "text-button", onclick: () => { showAllSamples = !showAllSamples; renderDetail(); }}, showAllSamples ? "Show fewer" : `Show all ${visibleSamples.length}`));
+  sampleSection.append(sampleHeader);
+  const chips = element("div", {class: "listing-filters", role: "group", "aria-label": "Filter floor plans"});
+  for (const [key, label] of [["all", "All"], ["available", "Available"], ["studio", "Studios"], ["1-bedroom", "1 bedroom"], ["2-bedroom", "2 bedrooms"], ["3-plus", "3+ bedrooms"]]) {
+    chips.append(element("button", {class: "filter-chip", "data-action": `filter-${key}`, "aria-pressed": String(listingFilter === key), onclick: () => { listingFilter = key; showAllSamples = false; renderDetail(); }}, label));
+  }
+  sampleSection.append(chips);
+  if (!monitor.samples.length) sampleSection.append(element("p", {class: "empty-note"}, "Check this website to load its floor plans."));
+  else if (!visibleSamples.length) sampleSection.append(element("p", {class: "empty-note"}, "No floor plans match this view."));
+  else sampleSection.append(element("div", {class: "sample-grid"}, ...visibleSamples.slice(0, showAllSamples ? 100 : 8).map((sample) => {
+    const details = [["Rent", sample.rent], ["Bedrooms", {studio: "Studio", "1-bedroom": "1", "2-bedroom": "2", "3-plus": sample.beds || "3+"}[sample.apartmentType] || sample.beds], ["Size", sample.size], ["Bathrooms", sample.baths]].filter(([, value]) => value);
+    return element("article", {class: `sample${sample.matched ? " matched" : ""}`},
+      element("div", {class: "sample-top"}, element("h4", {class: "sample-name"}, sample.name || "Floor plan description unavailable"), element("span", {class: `pill${sample.matched ? " available" : ""}`}, sample.included === false ? "Filtered out" : sample.matched ? "Available" : "Not available")),
+      element("p", {class: "sample-type"}, {studio: "Studio", "1-bedroom": "1 bedroom", "2-bedroom": "2 bedrooms", "3-plus": "3+ bedrooms"}[sample.apartmentType] || ""),
+      details.length ? element("dl", {class: "listing-details"}, ...details.map(([label, value]) => element("div", {}, element("dt", {}, label), element("dd", {}, value)))) : element("p", {class: "sample-context"}, "Check again to load apartment details."),
+      sample.matched && listingButton(monitor, sample));
+  })));
+  root.append(sampleSection);
+  const filter = element("select", {"aria-label": "Filter activity", style: "width:auto;margin:0;padding:4px 7px;font-size:10px"}, element("option", {value: "all"}, "All events"), element("option", {value: "changes"}, "Changes & errors"));
+  filter.value = historyFilter;
+  filter.addEventListener("change", () => { historyFilter = filter.value; renderDetail(); });
+  const events = monitor.history.filter((event) => historyFilter === "all" || event.kind !== "check" || event.changed).slice(0, 20);
+  const historySection = element("section", {class: "detail-section"}, element("div", {class: "section-heading"}, element("h3", {}, "Recent activity"), filter));
+  if (!events.length) historySection.append(element("p", {class: "empty-note"}, "Checks, changes, and errors will appear here."));
+  else historySection.append(element("ol", {class: "history-list"}, ...events.map((event) => element("li", {class: "history-item"},
+    element("span", {class: `history-dot${event.available ? " positive" : ["error", "warning"].includes(event.kind) ? " error" : ""}`, "aria-hidden": "true"}),
+    element("div", {class: "history-content"}, element("strong", {}, event.message), element("p", {}, event.kind === "check" ? `${event.matchedCount}/${event.totalCount} elements matched${event.changed ? " · Text changed" : ""}` : new Date(event.at).toLocaleDateString())),
+    element("time", {datetime: new Date(event.at).toISOString()}, clock(event.at)),
+  ))));
+  technical.append(historySection);
+  root.append(technical);
+
+  updateFreshness();
+  if (focusedAction) root.querySelector(`[data-action="${focusedAction}"]`)?.focus({preventScroll: true});
+}
+function nextLabel(monitor) {
+  if (!monitor.enabled) return "Paused";
+  if (busy(monitor)) return "In progress";
+  if (!monitor.nextCheckAt) return "Scheduling…";
+  const seconds = Math.max(0, Math.ceil((monitor.nextCheckAt - Date.now()) / 1000));
+  if (!seconds) return "Due · Chrome may delay";
+  return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s` : `${seconds}s`;
+}
+function openEditor(monitor = null) {
+  $("#editor-title").textContent = monitor?.id ? "Edit monitor" : "New monitor";
+  $("#monitor-id").value = monitor?.id || "";
+  $("#monitor-name").value = monitor?.name || "";
+  $("#monitor-url").value = monitor?.url || "";
+  $("#rule-type").value = monitor?.rule?.type || "css";
+  $("#rule-selector").value = monitor?.rule?.selector || "";
+  $("#rule-mode").value = monitor?.rule?.mode || "equals";
+  $("#rule-expected").value = monitor?.rule?.expected || "Available";
+  const seconds = monitor?.intervalSeconds || 300;
+  if (![...$("#interval").options].some((option) => Number(option.value) === seconds)) $("#interval").append(element("option", {value: String(seconds)}, `${seconds} seconds`));
+  $("#interval").value = String(seconds);
+  $("#notify").checked = monitor?.notify !== false;
+  $("#alert-sound").checked = Boolean(monitor?.sound);
+  document.querySelectorAll('[name="apartment-type"]').forEach((input) => { input.checked = monitor?.filters?.types?.includes(input.value) || false; });
+  const known = monitor?.samples?.length ? monitor.samples : monitor?.knownFloorplans || [];
+  const choices = new Map(known.map((sample) => [listingKey(sample), sample.name || `Floor plan ${sample.index}`]));
+  (monitor?.filters?.floorplans || []).forEach((id) => { if (!choices.has(id)) choices.set(id, id); });
+  $("#floorplan-filters").replaceChildren(...[...choices].map(([id, name]) => {
+    const input = element("input", {type: "checkbox", name: "floorplan", value: id});
+    input.checked = monitor?.filters?.floorplans?.includes(id) || false;
+    return element("label", {class: "checkbox-label"}, input, name);
+  }));
+  if (!choices.size) $("#floorplan-filters").append(element("p", {class: "helper"}, "Run Check now to load floor-plan choices."));
+  $("#hours-enabled").checked = Boolean(monitor?.hours?.enabled);
+  $("#hours-start").value = monitor?.hours?.start || "08:00";
+  $("#hours-end").value = monitor?.hours?.end || "22:00";
+  $("#hours-timezone").value = monitor?.hours?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  $("#preview-result").hidden = true;
+  $("#form-error").hidden = true;
+  updateRuleType();
+  $("#editor").showModal();
+}
+function config() {
+  return {
+    id: $("#monitor-id").value || undefined,
+    ...validateMonitor({
+      name: $("#monitor-name").value, url: $("#monitor-url").value,
+      intervalSeconds: $("#interval").value, notify: $("#notify").checked, sound: $("#alert-sound").checked,
+      filters: {types: [...document.querySelectorAll('[name="apartment-type"]:checked')].map((input) => input.value), floorplans: [...document.querySelectorAll('[name="floorplan"]:checked')].map((input) => input.value)},
+      hours: {enabled: $("#hours-enabled").checked, start: $("#hours-start").value, end: $("#hours-end").value, timeZone: $("#hours-timezone").value},
+      rule: {type: $("#rule-type").value, selector: $("#rule-selector").value, mode: $("#rule-mode").value, expected: $("#rule-expected").value},
+    }),
+  };
+}
+function updateRuleType() { $("#selector-label").hidden = $("#rule-type").value === "text"; }
+function formError(error) { $("#form-error").textContent = siteError({name: $("#monitor-name").value, url: $("#monitor-url").value}, error); $("#form-error").hidden = false; }
+
+$("#close-editor").addEventListener("click", () => $("#editor").close());
+$("#rule-type").addEventListener("change", updateRuleType);
+$("#monitor-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const input = config();
+    await grant(input.url);
+    const result = await request({type: "save", monitor: input});
+    selectedId = result.id;
+    $("#editor").close();
+    await loadState();
+    toast("Monitor saved. Start watching when you're ready.");
+  } catch (error) { formError(error); }
+});
+$("#preview-rule").addEventListener("click", async () => {
+  const button = $("#preview-rule");
+  try {
+    const input = config();
+    const permission = grant(input.url);
+    button.disabled = true;
+    button.textContent = "Reading page…";
+    await permission;
+    const preview = await request({type: "preview", monitor: input});
+    const root = $("#preview-result");
+    root.replaceChildren(element("strong", {}, `${preview.available ? "Available" : "Not available"} · ${preview.matches.filter((sample) => sample.matched).length}/${preview.matches.length} elements matched`), element("pre", {}, preview.matches.slice(0, 5).map((sample) => `${sample.matched ? "✓" : "·"} ${sample.text.slice(0, 300)}`).join("\n")));
+    root.hidden = false;
+    $("#form-error").hidden = true;
+  } catch (error) { formError(error); }
+  finally { button.disabled = false; button.textContent = "Preview rule"; }
+});
+$("#expand").addEventListener("click", () => chrome.tabs.create({url: chrome.runtime.getURL("panel.html")}));
+$("#export").addEventListener("click", () => {
+  const rules = {version: 3, monitors: value.monitors.map(({name, url, rule, intervalSeconds, notify, sound, filters, hours}) => ({name, url, rule, intervalSeconds, notify, sound, filters, hours}))};
+  const blob = new Blob([JSON.stringify(rules, null, 2)], {type: "application/json"});
+  const url = URL.createObjectURL(blob);
+  const link = element("a", {href: url, download: "spotalert-rules.json"});
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+$(".brand").addEventListener("click", (event) => { event.preventDefault(); window.scrollTo({top: 0, behavior: "smooth"}); });
+function listingButton(monitor, sample) {
+  const url = safeListingUrl(sample.applicationUrl, monitor.url);
+  if (url) return element("a", {class: "text-button listing-link", href: url, target: "_blank", rel: "noopener noreferrer"}, "Apply ↗");
+  return element("button", {class: "text-button listing-link", onclick: guard(() => request({type: "open-listing", id: monitor.id, listingId: listingKey(sample)}))}, "Open application ↗");
+}
+$("#editor-test-alert").addEventListener("click", guard(async () => {
+  const button = $("#editor-test-alert");
+  button.disabled = true;
+  try {
+    const result = await request({type: "test-alert", id: $("#monitor-id").value, sound: $("#alert-sound").checked});
+    if (result.errors?.length) toast(result.errors.join(" "), true);
+  } finally { button.disabled = false; }
+}));
+function showNextAvailability() {
+  if (activeAvailability || !availabilityQueue.length) return;
+  activeAvailability = availabilityQueue.shift();
+  $("#availability-site").textContent = activeAvailability.name;
+  $("#availability-title").textContent = activeAvailability.alert?.test ? "Test notification" : "New availability";
+  const listings = activeAvailability.alert?.listings || activeAvailability.samples.filter((sample) => sample.matched);
+  const test = activeAvailability.alert?.test;
+  $("#popup-snooze").hidden = Boolean(test);
+  $("#availability-listings").replaceChildren(...listings.map((sample) =>
+    element("div", {class: "availability-listing"}, element("strong", {}, sample.name || sample.text),
+      sample.name && element("p", {}, sample.text),
+      sample.context && element("p", {class: "muted"}, sample.context), !test && listingButton(activeAvailability, sample))));
+  $("#availability-popup").showModal();
+}
+$("#availability-popup").addEventListener("close", () => {
+  activeAvailability = null;
+  showNextAvailability();
+});
+$("#popup-snooze").addEventListener("click", guard(async () => {
+  if (!activeAvailability) return;
+  const id = activeAvailability.id;
+  await request({type: "snooze", id, minutes: 15});
+  for (let index = availabilityQueue.length - 1; index >= 0; index--) if (availabilityQueue[index].id === id && !availabilityQueue[index].alert?.test) availabilityQueue.splice(index, 1);
+  $("#availability-popup").close();
+  await loadState();
+}));
+$("#dismiss-availability").addEventListener("click", () => $("#availability-popup").close());
+$("#open-availability").addEventListener("click", guard(async () => {
+  const monitor = activeAvailability;
+  if (!monitor) return;
+  const listing = monitor.alert?.listings?.[0];
+  await request(listing && !monitor.alert.test ? {type: "open-listing", id: monitor.id, listingId: listingKey(listing)} : {type: "open", id: monitor.id});
+  selectedId = monitor.id;
+  render();
+  $("#availability-popup").close();
+}));
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && (changes[PROFILE_KEY] || changes[UI_KEY])) loadState().catch(error => toast(error.message, true));
+  if (area === "local" && changes[STORAGE_KEY]) {
+    const change = changes[STORAGE_KEY];
+    availabilityQueue.push(...availabilityArrivals(change.oldValue?.monitors, change.newValue?.monitors));
+    showNextAvailability();
+    loadState().catch((error) => toast(error.message, true));
+  }
+});
+setInterval(() => {
+  const monitor = selected();
+  const node = document.querySelector("[data-next]");
+  if (monitor && node) node.textContent = nextLabel(monitor);
+  updateFreshness();
+}, 1000);
+loadState().catch((error) => toast(error.message, true));
+
+$("#personal-info").addEventListener("click", guard(async () => {
+  const profile = await request({type: "profile"});
+  for (const field of PROFILE_FIELDS) $(`#personal-${field}`).value = profile[field] || "";
+  $("#personal-error").hidden = true;
+  $("#personal-dialog").showModal();
+}));
+$("#close-personal").addEventListener("click", () => $("#personal-dialog").close());
+$("#personal-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    const profile = Object.fromEntries(PROFILE_FIELDS.map(field => [field, $(`#personal-${field}`).value]));
+    await request({type: "save-profile", profile});
+    $("#personal-dialog").close();
+    toast("Personal information saved.");
+  } catch (error) {
+    $("#personal-error").textContent = error.message;
+    $("#personal-error").hidden = false;
+  }
+});
+$("#clear-personal").addEventListener("click", guard(async () => {
+  await request({type: "clear-profile"});
+  for (const field of PROFILE_FIELDS) $(`#personal-${field}`).value = "";
+  $("#personal-error").hidden = true;
+  toast("Saved personal information deleted.");
+}));
+$("#fill-application").addEventListener("click", guard(async () => {
+  const button = $("#fill-application");
+  button.disabled = true;
+  try {
+    const result = await request({type: "fill-application"});
+    toast(result.count ? `Filled ${result.count} ${result.count === 1 ? "field" : "fields"}. Review the form before submitting.` : "No empty matching fields found. Open the application form and try again.");
+  } finally { button.disabled = false; }
+}));
+
+$("#stop-all").addEventListener("click", guard(async () => {
+  $("#stop-all").disabled = true;
+  try {
+    await request({type: "stop-all"});
+    await loadState();
+    toast("All monitoring stopped.");
+  } finally { $("#stop-all").disabled = !value.monitors.some(monitor => monitor.enabled || busy(monitor)); }
+}));
+
+$("#compact-view").addEventListener("change", guard(async () => {
+  compactView = $("#compact-view").checked;
+  document.body.classList.toggle("compact", compactView);
+  await chrome.storage.local.set({[UI_KEY]: {compact: compactView}});
+}));
+
+function renderDebug() {
+  const debug = value.debug || {enabled: false, captures: []};
+  const captures = debug.captures || [];
+  $("#debug-mode").checked = Boolean(debug.enabled);
+  $("#debug-count").textContent = captures.length;
+  $("#debug-status").textContent = debug.enabled ? "On · watches direct links in your matching listings. Latest 20 captures are kept." : "Debug capture is off.";
+  $("#export-debug").disabled = !captures.length;
+  $("#clear-debug").disabled = !captures.length;
+  const opened = new Set([...$("#debug-captures").querySelectorAll("details[open]")].map(node => node.dataset.captureId));
+  $("#debug-captures").replaceChildren(...captures.slice(0, 5).map(capture => {
+    const card = element("details", {class: "debug-capture", "data-capture-id": capture.id},
+    element("summary", {}, capture.listingName, element("span", {class: "muted"}, ` · ${capture.status === "opening" ? "Opening…" : capture.status === "error" ? "Failed" : capture.snapshot?.pageKind || "Captured"}`)),
+    element("p", {class: "helper"}, `${capture.site} · ${clock(capture.at)}`),
+    capture.error && element("p", {class: "form-error"}, capture.error),
+    capture.tabId && element("button", {class: "text-button", onclick: guard(() => request({type: "open-debug", captureId: capture.id}))}, "Open captured tab ↗"),
+    capture.snapshot && element("pre", {class: "debug-output"}, JSON.stringify(capture.snapshot, null, 2)),
+    );
+    card.open = opened.has(capture.id);
+    return card;
+  }));
+}
+$("#debug-mode").addEventListener("change", guard(async () => {
+  const button = $("#debug-mode");
+  button.disabled = true;
+  try { await request({type: "set-debug", enabled: button.checked}); await loadState(); }
+  finally { button.disabled = false; }
+}));
+$("#clear-debug").addEventListener("click", guard(async () => {
+  await request({type: "clear-debug"}); await loadState();
+}));
+$("#export-debug").addEventListener("click", () => {
+  const captures = (value.debug?.captures || []).map(({tabId, ...capture}) => capture);
+  const blob = new Blob([JSON.stringify({version: 1, captures}, null, 2)], {type: "application/json"});
+  const url = URL.createObjectURL(blob);
+  element("a", {href: url, download: "spotalert-debug-captures.json"}).click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
