@@ -66,8 +66,41 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     monitor.history.unshift({id: crypto.randomUUID(), at: now(), ...event});
     monitor.history = monitor.history.slice(0, 80);
   }
+  const FOLDER_KEY = "spotalert.profile-folder.v1";
+  let profilesLoaded = false;
+  async function profileFolder(command, library) {
+    if (!api.runtime.sendNativeMessage) throw new Error("Install the local profile helper, then reload SpotAlert.");
+    let response;
+    try { response = await api.runtime.sendNativeMessage("com.spotalert.profiles", {command, ...(library ? {library} : {})}); }
+    catch { throw new Error("Local profile helper unavailable. Install it and reload SpotAlert; your Chrome copy is preserved."); }
+    if (!response?.ok) throw new Error(response?.error || "Could not access the local profile folder.");
+    return response;
+  }
+  async function saveLibrary(library) {
+    if ((await api.storage.local.get(FOLDER_KEY))[FOLDER_KEY]?.enabled) await profileFolder("write", library);
+    await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: library.profiles.find(item => item.id === library.activeId).details});
+  }
   async function profileLibrary() {
-    const saved = await api.storage.local.get([PROFILES_KEY, PROFILE_KEY]);
+    const saved = await api.storage.local.get([PROFILES_KEY, PROFILE_KEY, FOLDER_KEY]);
+    if (!profilesLoaded) {
+      // Restore disk profiles after removal/reinstallation, even without a Chrome copy.
+      try {
+        const disk = await profileFolder("read");
+        if (disk.library) {
+          const library = disk.library;
+          for (const entry of library.profiles) entry.details = validateProfile(entry.details);
+          await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: library.profiles.find(item => item.id === library.activeId).details, [FOLDER_KEY]: {enabled: true, path: disk.folder}});
+          profilesLoaded = true;
+          return library;
+        }
+        const library = saved[PROFILES_KEY] || {activeId: "default", profiles: [{id: "default", name: "My profile", details: validateProfile(saved[PROFILE_KEY])}]};
+        await profileFolder("write", library);
+        await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: library.profiles.find(item => item.id === library.activeId).details, [FOLDER_KEY]: {enabled: true, path: disk.folder}});
+        profilesLoaded = true;
+        return library;
+      } catch { /* Keep the browser copy usable; folder writes still report errors. */ }
+      profilesLoaded = true;
+    }
     if (saved[PROFILES_KEY]) return saved[PROFILES_KEY];
     const library = {activeId: "default", profiles: [{id: "default", name: "My profile", details: validateProfile(saved[PROFILE_KEY])}]};
     await api.storage.local.set({[PROFILES_KEY]: library});
@@ -418,6 +451,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
   async function runApplication(id, listing, existingTabId, signal) {
     const monitor = find(await state(), id);
     const origin = new URL(monitor.url).origin;
+    await profileLibrary();
     const profile = validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
     let tabId = existingTabId;
     let filled = 0;
@@ -677,12 +711,20 @@ ${link}`;
       }
       case "profile": return validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
       case "profiles": return profileLibrary();
+      case "profile-folder-status": return (await api.storage.local.get(FOLDER_KEY))[FOLDER_KEY] || {enabled: false};
+      case "enable-profile-folder": {
+        const library = await profileLibrary();
+        const disk = await profileFolder("write", library);
+        await api.storage.local.set({[FOLDER_KEY]: {enabled: true, path: disk.folder}});
+        return {enabled: true, path: disk.folder};
+      }
+      case "open-profile-folder": return profileFolder("open");
       case "create-profile": {
         const library = await profileLibrary();
         if (library.profiles.length >= 50) throw new Error("You can save up to 50 profiles.");
         const entry = {id: crypto.randomUUID(), name: "New profile", details: {}};
         library.profiles.push(entry); library.activeId = entry.id;
-        await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: {}});
+        await saveLibrary(library);
         return library;
       }
       case "select-profile": {
@@ -690,7 +732,7 @@ ${link}`;
         const entry = library.profiles.find(item => item.id === message.id);
         if (!entry) throw new Error("Profile not found.");
         library.activeId = entry.id;
-        await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: entry.details});
+        await saveLibrary(library);
         return library;
       }
       case "save-profile": {
@@ -700,7 +742,7 @@ ${link}`;
         const name = message.name === undefined ? entry.name : String(message.name).trim();
         if (!name || name.length > 80) throw new Error("Enter a profile name of up to 80 characters.");
         entry.name = name; entry.details = profile;
-        await api.storage.local.set({[PROFILE_KEY]: profile, [PROFILES_KEY]: library});
+        await saveLibrary(library);
         return {saved: true};
       }
       case "clear-profile": {
@@ -708,11 +750,12 @@ ${link}`;
         library.profiles = library.profiles.filter(item => item.id !== library.activeId);
         if (!library.profiles.length) library.profiles.push({id: "default", name: "My profile", details: {}});
         library.activeId = library.profiles[0].id;
-        await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: library.profiles[0].details});
+        await saveLibrary(library);
         return {cleared: true};
       }
       case "fill-application": {
-        const profile = validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
+        await profileLibrary();
+    const profile = validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
         if (!Object.values(profile).some(Boolean)) throw new Error("Save your personal information first.");
         const [tab] = await api.tabs.query({active: true, currentWindow: true});
         if (!tab?.url || !SUPPORTED_SITES.some(site => new URL(site.url).origin === new URL(tab.url).origin)) throw new Error("Open a supported housing application form in the active tab, then use SpotAlert’s side panel to fill it.");
@@ -739,7 +782,7 @@ ${link}`;
         if (library.profiles.length >= 50) throw new Error("You can save up to 50 profiles.");
         const entry = {id: crypto.randomUUID(), name, details: profile};
         library.profiles.push(entry); library.activeId = entry.id;
-        await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: profile});
+        await saveLibrary(library);
         return {saved: true};
       }
       case "test-email": {

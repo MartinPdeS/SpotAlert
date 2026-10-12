@@ -31,3 +31,7 @@ env/
 
 # Application debug exports may contain private page content
 spotalert-debug-captures*.json
+
+# Private applicant profiles and machine-specific native launcher
+SpotAlert/local_profiles/
+SpotAlert/profile-native-host

@@ -71,6 +71,11 @@ async function loadState() {
       value = state;
       personalProfile = preferences[PROFILE_KEY] || {};
       const library = await request({type: "profiles"});
+      const folder = await request({type: "profile-folder-status"});
+      $("#profile-folder-status").textContent = folder.enabled ? `Saved to ${folder.path}/profiles.json` : "Keep a JSON copy alongside SpotAlert.";
+      $("#enable-profile-folder").hidden = folder.enabled;
+      $("#open-profile-folder").hidden = !folder.enabled;
+      personalProfile = library.profiles.find(item => item.id === library.activeId)?.details || personalProfile;
       if (!personalDirty) {
         $("#saved-profile").replaceChildren(...library.profiles.map(item => element("option", {value: item.id}, item.name)));
         $("#saved-profile").value = library.activeId;
@@ -730,3 +735,9 @@ $("#import-client-profile").addEventListener("click", guard(async () => {
     await loadState(); switchTab("personal"); toast("Client profile created. Review the details before applying.");
   } finally { button.disabled = false; }
 }));
+
+$("#enable-profile-folder").addEventListener("click", guard(async () => {
+  if (personalDirty) throw new Error("Save your profile changes first.");
+  await request({type: "enable-profile-folder"}); await loadState(); toast("Profiles saved to the local SpotAlert folder.");
+}));
+$("#open-profile-folder").addEventListener("click", guard(() => request({type: "open-profile-folder"})));

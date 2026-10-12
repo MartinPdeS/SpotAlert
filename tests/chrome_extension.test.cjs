@@ -69,11 +69,11 @@ async function setup() {
   return {core, createEngine, api, engine, id: "ourdomain-amsterdam-diemen"};
 }
 
-test("standalone manifest has side panel and no native-messaging dependency", async () => {
+test("manifest allows optional native messaging for local profile storage", async () => {
   const manifest = JSON.parse(fs.readFileSync("SpotAlert/chrome_extension/manifest.json"));
   assert.ok(manifest.permissions.includes("sidePanel"));
   assert.ok(manifest.permissions.includes("storage"));
-  assert.ok(!manifest.permissions.includes("nativeMessaging"));
+  assert.ok(manifest.permissions.includes("nativeMessaging"));
   assert.deepEqual(manifest.host_permissions, ["https://thisisourdomain.securerc.co.uk/*", "https://southeast-thisisourdomain.securerc.co.uk/*", "https://api.resend.com/*", "https://canvas-world.securerc.co.uk/*", "https://www.canvas-world.com/*"]);
   assert.equal(manifest.side_panel.default_path, "panel.html");
 });
@@ -1021,4 +1021,25 @@ test('client questionnaire imports answers and optional existing account passwor
   assert.equal(api.data[PROFILE_KEY].email, 'alex@example.com');
   assert.equal(api.data[PROFILES_KEY].profiles.length, 2);
   assert.ok(!JSON.stringify(await engine.state()).includes('alex@example.com'));
+});
+
+test('local profile folder mirrors saves and restores after Chrome storage removal', async () => {
+  const {engine, api} = await setup();
+  let disk = null;
+  api.runtime.sendNativeMessage = async (host, message) => {
+    assert.equal(host, 'com.spotalert.profiles');
+    if (message.command === 'write') disk = structuredClone(message.library);
+    return {ok:true, library:disk, folder:'/test/SpotAlert/local_profiles'};
+  };
+  await engine.dispatch({type:'enable-profile-folder'});
+  await engine.dispatch({type:'save-profile', name:'Alex', profile:{firstName:'Alex'}});
+  assert.equal(disk.profiles[0].details.firstName, 'Alex');
+  const {PROFILES_KEY, PROFILE_KEY} = await import('../SpotAlert/chrome_extension/profile.js');
+  delete api.data[PROFILES_KEY]; delete api.data[PROFILE_KEY];
+  const {createEngine} = await import('../SpotAlert/chrome_extension/engine.js');
+  const restored = await createEngine(api).dispatch({type:'profiles'});
+  assert.equal(restored.profiles[0].details.firstName, 'Alex');
+  api.runtime.sendNativeMessage = async () => {throw new Error('unavailable');};
+  await assert.rejects(engine.dispatch({type:'save-profile', profile:{firstName:'Sam'}}), /helper unavailable/);
+  assert.equal(api.data[PROFILE_KEY].firstName, 'Alex');
 });
