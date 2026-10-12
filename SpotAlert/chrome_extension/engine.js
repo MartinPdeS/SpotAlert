@@ -1,5 +1,7 @@
+import {clientQuestionnaire, parseClientReply} from "./clients.js";
 import {ALARM_PREFIX, STORAGE_KEY, defaultMonitor, evaluateRule, sitePattern, siteError, errorKind, newListings, listingKey, safeListingUrl, samePage, inMonitoringHours, nextMonitoringTime, retrySeconds, SUPPORTED_SITES, validateSupportedMonitor, validateMonitor} from "./core.js";
-import {PROFILE_KEY, validateProfile, fillApplicationForm, selectMoveInDate, startCanvasApplication} from "./profile.js";
+import {PROFILE_KEY, PROFILES_KEY, validateProfile, fillApplicationForm, selectMoveInDate, startCanvasApplication} from "./profile.js";
+import {applicationStep, captureApplicationStructure} from "./application.js";
 import {inspectApplicationPage} from "./debug.js";
 import {EMAIL_KEY, sendEmailAlert} from "./email.js";
 import {playAlertSound} from "./alerts.js";
@@ -12,6 +14,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
   const running = new Map();
   const fastTimers = new Map();
   const debugRuns = new Map();
+  const applications = new Map();
   function clearFastTimer(id) {
     if (fastTimers.has(id)) timers.clearTimeout(fastTimers.get(id));
     fastTimers.delete(id);
@@ -63,11 +66,19 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     monitor.history.unshift({id: crypto.randomUUID(), at: now(), ...event});
     monitor.history = monitor.history.slice(0, 80);
   }
+  async function profileLibrary() {
+    const saved = await api.storage.local.get([PROFILES_KEY, PROFILE_KEY]);
+    if (saved[PROFILES_KEY]) return saved[PROFILES_KEY];
+    const library = {activeId: "default", profiles: [{id: "default", name: "My profile", details: validateProfile(saved[PROFILE_KEY])}]};
+    await api.storage.local.set({[PROFILES_KEY]: library});
+    return library;
+  }
   async function initialize() {
     await mutate((value) => {
       value.debug ||= {enabled: false, captures: [], seen: {}};
       for (const capture of value.debug.captures || []) if (capture.status === "opening") { capture.status = "error"; capture.error = "Chrome restarted before capture completed."; }
       const previous = value.monitors || [];
+      for (const monitor of previous) if (monitor.application?.status === "running") Object.assign(monitor.application, {status: "stopped", kind: "interrupted", message: "Chrome restarted. Open the application tab and continue."});
       value.alertPreferences ||= {notify: previous.length ? previous.some(m => m.notify) : true, sound: previous.some(m => m.sound)};
       value.alertPreferences.popup ??= value.alertPreferences.notify;
       value.alertPreferences.desktop ??= value.alertPreferences.notify;
@@ -166,6 +177,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     if (enabled) return check(id, true);
   }
   async function stopAll() {
+    await Promise.all([...applications.keys()].map(id => stopApplication(id)));
     await mutate(async (value) => {
       for (const monitor of value.monitors) {
         clearFastTimer(monitor.id);
@@ -393,84 +405,125 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     } catch { /* Recreate only if the affected tab no longer exists. */ }
     return open(id);
   }
-  async function fillCanvasApplicant(tabId, profile, signal) {
-    const deadline = Date.now() + 20000;
-    do {
-      const tab = await api.tabs.get(tabId);
-      const url = new URL(tab.url);
-      if (url.hostname !== "canvas-world.securerc.co.uk") return {tabId, moveInMessage: "Check the opened tab to continue the application."};
-      if (/oleapplication\.aspx$/i.test(url.pathname) && url.searchParams.get("stepname") === "intapplicantinfo") {
-        await waitForPage(tabId, signal, false);
-        const ready = (await api.scripting.executeScript({target: {tabId}, func: () => !!document.querySelector('#ProspectFirstName')}))[0]?.result;
-        if (ready) {
-          const result = (await api.scripting.executeScript({target: {tabId}, func: fillApplicationForm, args: [profile]}))[0]?.result;
-          return {tabId, moveInMessage: `Application opened. Filled ${result?.count || 0} empty fields from Personal information. Review the remaining fields and agreements.`};
-        }
-      }
-      await new Promise(resolve => setTimeout(resolve, 250));
-    } while (Date.now() < deadline);
-    return {tabId, moveInMessage: "The applicant form has not opened yet. Check the tab for a login or verification prompt; use Fill application form once it is open."};
+  async function applicationStatus(id, update) {
+    await mutate(value => { const monitor = find(value, id); monitor.application = {...monitor.application, ...update, updatedAt: now()}; });
   }
-  async function openListing(id, listingId) {
+  async function stopApplication(id) {
+    applications.get(id)?.controller.abort();
+    const tabId = find(await state(), id).application?.tabId;
+    if (tabId) try {
+      await api.scripting.executeScript({target: {tabId}, func: () => { document.documentElement.dataset.spotalertApplicationStopped = "true"; }});
+    } catch { /* A closed or navigating tab needs no further action. */ }
+  }
+  async function runApplication(id, listing, existingTabId, signal) {
     const monitor = find(await state(), id);
-    const listing = [...(monitor.alert?.listings || []), ...monitor.samples].find((sample) => listingKey(sample) === listingId);
-    if (!listing) throw new Error("This listing is no longer in the saved results. Run a new check.");
-    if (new URL(monitor.url).hostname === "canvas-world.securerc.co.uk") {
-      const signal = new AbortController().signal;
-      const tab = await api.tabs.create({url: "about:blank", active: true});
-      await waitForPage(tab.id, signal, false);
-      await api.tabs.update(tab.id, {url: monitor.url});
-      await waitForPage(tab.id, signal, false);
-      const action = (await api.scripting.executeScript({target: {tabId: tab.id}, func: openApplication, args: [listing]}))[0]?.result;
-      if (!action?.opened) throw new Error(action?.reason || "Could not open this floor plan's availability.");
-      // Wait for navigation rather than reading the floor-plan document again.
-      const deadline = Date.now() + 12000;
-      let destination;
-      do {
-        destination = await api.tabs.get(tab.id);
-        if (!/floorplans\.aspx/i.test(new URL(destination.url).pathname)) break;
-        await new Promise(resolve => setTimeout(resolve, 100));
-      } while (Date.now() < deadline);
-      if (/floorplans\.aspx/i.test(new URL(destination.url).pathname)) throw new Error("The availability page did not open. Check the opened tab.");
-      await waitForPage(tab.id, signal, false);
-      const booking = (await api.scripting.executeScript({target: {tabId: tab.id}, func: canvasBookingLink, args: [listing]}))[0]?.result;
-      if (!booking?.url && !booking?.opened) throw new Error(booking?.error || "No Book link found. Check the opened tab.");
-      if (booking.url) await api.tabs.update(tab.id, {url: booking.url, active: true});
-      const bookingDeadline = Date.now() + 12000;
-      do {
-        destination = await api.tabs.get(tab.id);
-        if (/termsandotheritems\.aspx$/i.test(new URL(destination.url).pathname)) break;
-        await new Promise(resolve => setTimeout(resolve, 100));
-      } while (Date.now() < bookingDeadline);
-      if (!/termsandotheritems\.aspx$/i.test(new URL(destination.url).pathname)) throw new Error("The booking form did not open. Check the opened tab.");
-      await waitForPage(tab.id, signal, false);
-      const profile = validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
-      const date = (await api.scripting.executeScript({target: {tabId: tab.id}, func: selectMoveInDate, args: [profile]}))[0]?.result;
-      if (date?.moveInDate) {
-        for (let attempt = 0; attempt < 3; attempt++) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          await waitForPage(tab.id, signal, false);
-          const currentTab = await api.tabs.get(tab.id);
-          if (!/termsandotheritems\.aspx$/i.test(new URL(currentTab.url).pathname)) return fillCanvasApplicant(tab.id, profile, signal);
-          try {
-            const next = (await api.scripting.executeScript({target: {tabId: tab.id}, world: "MAIN", func: startCanvasApplication, args: [date.moveInDate]}))[0]?.result;
-            if (next?.started) return fillCanvasApplicant(tab.id, profile, signal);
-            return {tabId: tab.id, moveInMessage: next?.message || "Check the application tab to continue."};
-          } catch (error) {
-            if (attempt === 2 || !/frame|context|document|navigation|removed/i.test(error.message)) throw error;
+    const origin = new URL(monitor.url).origin;
+    const profile = validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
+    let tabId = existingTabId;
+    let filled = 0;
+    const done = async (message, kind = "review", details = {}) => {
+      await applicationStatus(id, {status: "stopped", kind, message, tabId, filled, missingFields: details.missingFields || [], structure: details.structure || null});
+      return {tabId, moveInMessage: message};
+    };
+    try {
+      if (!tabId) {
+        const direct = safeListingUrl(listing.applicationUrl, monitor.url);
+        // Dynamic onclick URLs can be partial: follow the actual floor-plan action.
+        const initial = direct && !/floorplans\.aspx$/i.test(new URL(direct).pathname) && new URL(monitor.url).hostname !== "canvas-world.securerc.co.uk" ? direct : monitor.url;
+        const tab = await api.tabs.create({url: "about:blank", active: true});
+        tabId = tab.id;
+        await waitForPage(tabId, signal, false);
+        if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
+        await api.tabs.update(tabId, {url: initial});
+      } else await api.tabs.update(tabId, {active: true});
+      await applicationStatus(id, {status: "running", message: "Opening the selected apartment…", tabId, filled, missingFields: [], structure: null});
+      const deadline = Date.now() + 120000;
+      const dates = new Map();
+      const acted = new Set();
+      let previousAction = null, actionAt = 0;
+      for (let attempt = 0; attempt < 160 && Date.now() < deadline; attempt++) {
+        if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
+        await waitForPage(tabId, signal, false);
+        const tab = await api.tabs.get(tabId);
+        const url = new URL(tab.url);
+        if (url.origin !== origin) return done("The website opened another origin. Continue there manually.", "navigation");
+        await api.scripting.executeScript({target: {tabId}, func: () => { delete document.documentElement.dataset.spotalertApplicationStopped; }});
+        try {
+          const page = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: applicationStep}))[0]?.result;
+          if (!page) return done("Chrome could not inspect the application page.", "error");
+          if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
+          if (page.kind === "loading") { await new Promise(resolve => setTimeout(resolve, 250)); continue; }
+          if (page.kind === "verification") return done(page.message, page.kind, page);
+          const path = url.pathname.toLowerCase();
+          const key = page.key + (path.endsWith('termsandotheritems.aspx') ? ':' + url.searchParams.get('UnitID') : '');
+          if (previousAction === key) {
+            if (Date.now() - actionAt > 15000) return done("The website did not advance. Check the application tab for verification or an error, then continue.", "waiting");
+            await new Promise(resolve => setTimeout(resolve, 250)); continue;
           }
+          previousAction = null;
+          if (path.endsWith('floorplans.aspx')) {
+            if (acted.has(key)) return done("The website returned to the listing page. Check availability before applying again.", "navigation");
+            const result = (await api.scripting.executeScript({target: {tabId}, func: openApplication, args: [listing]}))[0]?.result;
+            if (!result?.opened) return done(result?.reason || "Could not open this floor plan.", "availability");
+            acted.add(key); previousAction = key; actionAt = Date.now();
+            await applicationStatus(id, {message: "Opening availability for the selected floor plan…"});
+          } else if (path.endsWith('availableunits.aspx')) {
+            if (acted.has(key)) return done("The website returned to apartment selection. Review the available units.", "availability");
+            const result = (await api.scripting.executeScript({target: {tabId}, func: canvasBookingLink, args: [listing]}))[0]?.result;
+            if (!result?.opened && !result?.url) return done(result?.error || "No booking action found for this floor plan.", "availability");
+            if (result.url) await api.tabs.update(tabId, {url: result.url});
+            acted.add(key); previousAction = key; actionAt = Date.now();
+            await applicationStatus(id, {message: "Opening the apartment booking form…"});
+          } else if (path.endsWith('termsandotheritems.aspx')) {
+            if (!dates.has(key)) {
+              const date = (await api.scripting.executeScript({target: {tabId}, func: selectMoveInDate, args: [profile]}))[0]?.result;
+              if (!date?.moveInDate) return done(date?.moveInMessage || "Choose a move-in date on the website.", "date");
+              dates.set(key, date.moveInDate);
+              await applicationStatus(id, {message: `Selecting move-in date ${date.moveInDate}…`});
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              continue;
+            }
+            const next = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: startCanvasApplication, args: [dates.get(key)]}))[0]?.result;
+            if (!next?.started) return done(next?.message || "Check the booking page before continuing.", "date");
+            previousAction = key; actionAt = Date.now();
+            await applicationStatus(id, {message: "Starting the application…"});
+          } else if (path.endsWith('oleapplication.aspx')) {
+            if (acted.has(key)) return done("This step has already been continued. Review the website before trying again.", "waiting");
+            if (["documents", "review", "login", "unfamiliar"].includes(page.kind)) return done(page.message, page.kind, page);
+            const result = (await api.scripting.executeScript({target: {tabId}, func: fillApplicationForm, args: [profile]}))[0]?.result;
+            filled += result?.count || 0;
+            await applicationStatus(id, {filled, message: `Filled ${filled} fields from Personal information…`});
+            // Reinspect after field changes; never advance based on stale validation.
+            const next = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: applicationStep, args: [true]}))[0]?.result;
+            if (next?.kind === "loading") { await new Promise(resolve => setTimeout(resolve, 250)); continue; }
+            if (!next?.advanced) return done(next?.message || "Details filled. Review this step on the website.", next?.kind, next || {});
+            acted.add(key); previousAction = key; actionAt = Date.now();
+            await applicationStatus(id, {message: "Continuing to the next application step…"});
+          } else return done("This page needs your review before continuing. Download its field structure to help add support.", "unfamiliar", {structure: (await api.scripting.executeScript({target: {tabId}, func: captureApplicationStructure}))[0]?.result});
+        } catch (error) {
+          if (!/frame|context|document|navigation|removed/i.test(error.message)) throw error;
+          await new Promise(resolve => setTimeout(resolve, 250));
         }
       }
-      return {tabId: tab.id, moveInMessage: date?.moveInMessage || "Could not select a move-in date. Check the booking tab."};
+      return done("The application is taking longer than expected. Check the tab, then continue.", "waiting");
+    } catch (error) {
+      return done(signal.aborted ? "Application automation stopped." : error.message, signal.aborted ? "cancelled" : "error");
     }
-    const direct = safeListingUrl(listing.applicationUrl, monitor.url);
-    if (direct) return (await api.tabs.create({url: direct, active: true})).id;
-    const tab = await tabFor(monitor, new AbortController().signal);
-    await api.tabs.update(tab.id, {active: true});
-    await waitForPage(tab.id, new AbortController().signal, false);
-    const result = (await api.scripting.executeScript({target: {tabId: tab.id}, func: openApplication, args: [listing]}))[0]?.result;
-    if (!result?.opened) throw new Error(result?.reason || "Open this floor plan on the website to apply.");
-    return tab.id;
+  }
+  async function openListing(id, listingId, resume = false) {
+    if (applications.has(id)) return applications.get(id).promise;
+    const monitor = find(await state(), id);
+    const listing = [...(monitor.alert?.listings || []), ...monitor.samples].find(sample => listingKey(sample) === (resume ? monitor.application?.listingId : listingId));
+    if (!listing && !resume) throw new Error("This listing is no longer in the saved results. Run a new check.");
+    if (resume && !monitor.application?.tabId) throw new Error("Open an application with Apply first.");
+    const controller = new AbortController();
+    const run = {controller};
+    applications.set(id, run);
+    run.promise = (async () => {
+      await applicationStatus(id, {listingId: resume ? monitor.application.listingId : listingKey(listing)});
+      return runApplication(id, listing || {}, resume ? monitor.application.tabId : null, controller.signal);
+    })().finally(() => applications.delete(id));
+    return run.promise;
   }
   async function captureApplications(id, generation, signal) {
     // Claim before opening, so repeated five-second checks cannot reopen a link.
@@ -623,12 +676,41 @@ ${link}`;
         return {tabId: capture.tabId};
       }
       case "profile": return validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
+      case "profiles": return profileLibrary();
+      case "create-profile": {
+        const library = await profileLibrary();
+        if (library.profiles.length >= 50) throw new Error("You can save up to 50 profiles.");
+        const entry = {id: crypto.randomUUID(), name: "New profile", details: {}};
+        library.profiles.push(entry); library.activeId = entry.id;
+        await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: {}});
+        return library;
+      }
+      case "select-profile": {
+        const library = await profileLibrary();
+        const entry = library.profiles.find(item => item.id === message.id);
+        if (!entry) throw new Error("Profile not found.");
+        library.activeId = entry.id;
+        await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: entry.details});
+        return library;
+      }
       case "save-profile": {
         const profile = validateProfile(message.profile);
-        await api.storage.local.set({[PROFILE_KEY]: profile});
+        const library = await profileLibrary();
+        const entry = library.profiles.find(item => item.id === library.activeId);
+        const name = message.name === undefined ? entry.name : String(message.name).trim();
+        if (!name || name.length > 80) throw new Error("Enter a profile name of up to 80 characters.");
+        entry.name = name; entry.details = profile;
+        await api.storage.local.set({[PROFILE_KEY]: profile, [PROFILES_KEY]: library});
         return {saved: true};
       }
-      case "clear-profile": await api.storage.local.set({[PROFILE_KEY]: {}}); return {cleared: true};
+      case "clear-profile": {
+        const library = await profileLibrary();
+        library.profiles = library.profiles.filter(item => item.id !== library.activeId);
+        if (!library.profiles.length) library.profiles.push({id: "default", name: "My profile", details: {}});
+        library.activeId = library.profiles[0].id;
+        await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: library.profiles[0].details});
+        return {cleared: true};
+      }
       case "fill-application": {
         const profile = validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
         if (!Object.values(profile).some(Boolean)) throw new Error("Save your personal information first.");
@@ -642,6 +724,23 @@ ${link}`;
           return {...result, ...date, count: result.count + date.count, fields: [...result.fields, ...(date.count ? ["moveInFrom"] : [])]};
         }
         return result;
+      }
+      case "send-client-questionnaire": {
+        const to = String(message.to || "").trim(), replyTo = String(message.replyTo || "").trim();
+        if (![to, replyTo].every(address => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address))) throw new Error("Enter valid client and reply-to email addresses.");
+        const name = String(message.name || "").trim().slice(0, 80);
+        return sendEmailAlert(api, {id: crypto.randomUUID()}, "Your apartment application details", clientQuestionnaire(name), true, {to, replyTo});
+      }
+      case "import-client-profile": {
+        const profile = parseClientReply(message.reply);
+        const name = String(message.name || "").trim();
+        if (!name || name.length > 80) throw new Error("Enter a profile name of up to 80 characters.");
+        const library = await profileLibrary();
+        if (library.profiles.length >= 50) throw new Error("You can save up to 50 profiles.");
+        const entry = {id: crypto.randomUUID(), name, details: profile};
+        library.profiles.push(entry); library.activeId = entry.id;
+        await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: profile});
+        return {saved: true};
       }
       case "test-email": {
         const alert = {id: crypto.randomUUID()};
@@ -660,6 +759,17 @@ ${link}`;
       case "open-listing": {
         const result = await openListing(message.id, message.listingId);
         return typeof result === "number" ? {tabId: result} : result;
+      }
+      case "continue-application": return openListing(message.id, null, true);
+      case "open-application-tab": {
+        const app = find(await state(), message.id).application;
+        if (!app?.tabId) throw new Error("No application tab has been opened.");
+        await api.tabs.update(app.tabId, {active: true});
+        return {tabId: app.tabId};
+      }
+      case "stop-application": {
+        await stopApplication(message.id);
+        return {stopped: true};
       }
       case "open-notification": return {tabId: await openNotification(message.notificationId)};
       case "snooze-all":

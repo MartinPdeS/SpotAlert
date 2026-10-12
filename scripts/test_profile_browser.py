@@ -28,8 +28,31 @@ def main():
             panel.get_by_role('button', name='Save personal information', exact=True).click()
             expect(panel.locator('#application-readiness')).to_contain_text('details prepared')
             panel.reload()
+            panel.get_by_role('tab', name='Personal information', exact=True).click()
             expect(panel.locator('#personal-dateOfBirth')).to_have_value('1995-03-04')
             expect(panel.locator('#personal-hasPets')).to_have_value('No')
+            original_id = panel.locator('#saved-profile').input_value()
+            panel.get_by_role('button', name='New profile', exact=False).click()
+            expect(panel.locator('#personal-firstName')).to_have_value('')
+            second_id = panel.locator('#saved-profile').input_value()
+            panel.locator('#profile-name').fill('Sam')
+            for summary in panel.locator('.profile-group summary').all():
+                if not summary.evaluate('(e)=>e.parentElement.open'):
+                    summary.click()
+            panel.locator('#personal-firstName').fill('Sam')
+            panel.locator('#personal-registrationPassword').fill('SamPassword123!')
+            panel.get_by_role('button', name='Save personal information', exact=True).click()
+            expect(panel.locator('#toast')).to_contain_text('saved')
+            panel.locator('#saved-profile').select_option(original_id)
+            expect(panel.locator('#personal-firstName')).to_have_value('Alex')
+            expect(panel.locator('#personal-registrationPassword')).to_have_value('')
+            panel.locator('#saved-profile').select_option(second_id)
+            expect(panel.locator('#personal-registrationPassword')).to_have_value('SamPassword123!')
+            panel.reload()
+            panel.get_by_role('tab', name='Personal information', exact=True).click()
+            expect(panel.locator('#profile-name')).to_have_value('Sam')
+            panel.locator('#saved-profile').select_option(original_id)
+            expect(panel.locator('#personal-firstName')).to_have_value('Alex')
             fields = ['ProspectFirstName', 'ProspectPhone', 'ProspectDOB999', 'DOBLEASEBUT_REQINFO4', 'Currentaddr999Addr1', 'Currentaddr999ZipCode', 'Currentaddr999City', 'Empaddr999Addr1', 'EmpPhone999', 'EmergencyContactName', 'EmergencyPhone', 'Emergaddr999Addr1', 'Emergaddr999ZipCode', 'Emergaddr999City', 'Currentrentpaid999', 'UnknownPhone', 'ProspectMiddleName']
             fixture = ''.join(f'<input id="{field}">' for field in fields)
             fixture += '<input id="DOBLEASEBUT_REQINFO9" value="01-01-2000"><input id="ProspectDOB" type="date"><input id="EmergencyDOB" value="01-01-1980">'
@@ -57,10 +80,54 @@ def main():
             expect(form.locator('#DOBLEASEBUT_REQINFO9')).to_have_value('04-03-1995')
             expect(form.locator('#ProspectDOB')).to_have_value('1995-03-04')
             expect(form.locator('#EmergencyDOB')).to_have_value('01-01-1980')
+            registration_url = 'https://southeast-thisisourdomain.securerc.co.uk/onlineleasing/ourdomain-amsterdam-south-east/oleapplication.aspx?stepname=Registration'
+            registration = ''.join(f'<input id="{field}">' for field in ['txtName','txtName2','txtEmail','txtPhone','BirthDate'])
+            registration += '<input id="txtPassword" type="password"><input id="SubscribeToEmails" type="checkbox"><button onclick="document.body.dataset.created=1">Create my account</button>'
+            context.route('https://southeast-thisisourdomain.securerc.co.uk/**', lambda route: route.fulfill(body=registration, content_type='text/html'))
+            reg = context.new_page()
+            reg.goto(registration_url)
+            worker.evaluate("async () => {const tabs=await chrome.tabs.query({});await chrome.tabs.update(tabs.find(t=>t.url.includes('stepname=Registration')).id,{active:true});}")
+            response = panel.evaluate("async () => chrome.runtime.sendMessage({type:'fill-application'})")
+            assert response['ok'] and response['result']['count'] == 5, response
+            for field, value in {'txtName':'Alex','txtName2':'Example','txtEmail':'alex@example.com','txtPhone':'+31612345678','BirthDate':'04-03-1995','txtPassword':''}.items():
+                expect(reg.locator(f'#{field}')).to_have_value(value)
+            expect(reg.locator('#SubscribeToEmails')).not_to_be_checked()
+            assert reg.locator('body').get_attribute('data-created') is None
+            panel.get_by_role('tab', name='Personal information', exact=True).click()
+            panel.locator('.profile-tools summary').click()
+            panel.locator('#generate-registration-details').click()
+            temporary_birth = panel.locator('#personal-dateOfBirth').input_value()
+            assert len(panel.locator('#personal-registrationPassword').input_value()) >= 24
+            panel.get_by_role('button', name='Save personal information', exact=True).click()
+            panel.reload()
+            panel.get_by_role('tab', name='Personal information', exact=True).click()
+            expect(panel.locator('#personal-dateOfBirth')).to_have_value(temporary_birth)
+            response = panel.evaluate("async () => chrome.runtime.sendMessage({type:'fill-application'})")
+            assert response['ok'], response
+            assert len(reg.locator('#txtPassword').input_value()) >= 24
+            year, month, day = temporary_birth.split('-')
+            expect(reg.locator('#BirthDate')).to_have_value(f'{day}-{month}-{year}')
+            assert reg.locator('body').get_attribute('data-created') is None
             for width in [320, 1280]:
                 panel.set_viewport_size({'width':width,'height':900})
                 panel.get_by_role('tab', name='Personal information', exact=True).click()
                 assert panel.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                screenshots = ROOT / 'artifacts/extension'
+                screenshots.mkdir(parents=True, exist_ok=True)
+                panel.screenshot(path=str(screenshots / f'personal-redesign-{width}.png'), full_page=True)
+            panel.get_by_role('tab', name='Clients', exact=True).click()
+            reply = panel.evaluate("async()=>{const {clientQuestionnaire}=await import('./clients.js');return clientQuestionnaire('Jamie').replace('First name: ', 'First name: Jamie').replace('Email: ', 'Email: jamie@example.com').replace('Password: ', 'Password: ClientExisting123!');}")
+            panel.locator('#client-profile-name').fill('Jamie client')
+            panel.locator('#client-reply').fill(reply)
+            panel.get_by_role('button', name='Review answers', exact=True).click()
+            expect(panel.locator('#client-import-preview')).to_contain_text('jamie@example.com')
+            expect(panel.locator('#client-import-preview')).to_contain_text('Password provided · hidden')
+            expect(panel.locator('#client-import-preview')).not_to_contain_text('ClientExisting123!')
+            panel.get_by_role('button', name='Create profile', exact=True).click()
+            expect(panel.locator('#personal-view')).to_be_visible()
+            expect(panel.locator('#profile-name')).to_have_value('Jamie client')
+            expect(panel.locator('#personal-firstName')).to_have_value('Jamie')
+            expect(panel.locator('#personal-registrationPassword')).to_have_value('ClientExisting123!')
         finally:
             context.close()
     print('Expanded profile browser check passed: persistence, separate people, dates, choices, consent untouched and responsive layout.')

@@ -900,9 +900,14 @@ test("move-in selection respects the earliest preference, calendar limits, and e
   assert.equal(choose("2026-10-30").moveInDate, "30-10-2026");
   assert.equal(choose("2026-10-31").count, 0);
   assert.equal(input.value, "30-10-2026");
+  context.document.scripts = [{textContent: config.replace('[0,6]', '[]')}];
+  assert.equal(choose('2026-10-24').moveInDate, '26-10-2026');
+  assert.equal(choose('2026-10-25').moveInDate, '26-10-2026');
+  context.document.scripts = [{textContent: config.replace('[0,6]', '[1]')}];
+  assert.equal(choose('2026-10-24').moveInDate, '27-10-2026');
   context.document.scripts = [];
   assert.match(choose("2026-10-20").moveInMessage, /Could not determine/);
-  assert.equal(input.value, "30-10-2026");
+  assert.equal(input.value, "27-10-2026");
 });
 
 test("Canvas Book chooses the earliest unit in the selected floor plan and never starts an application", async () => {
@@ -913,6 +918,10 @@ test("Canvas Book chooses the earliest unit in the selected floor plan and never
   const result = await vm.runInNewContext(`(${canvasBookingLink.toString()})({floorplanId:'501'}, 0)`, context);
   assert.equal(result.opened, true);
   assert.equal(clicked, '450281');
+  clicked = null;
+  const ambiguous = await vm.runInNewContext(`(${canvasBookingLink.toString()})({}, 0)`, context);
+  assert.match(ambiguous.error, /Choose a floor plan/);
+  assert.equal(clicked, null);
 });
 
 test('Start Application requires the selected date and an enabled button, and clicks once', async () => {
@@ -946,4 +955,70 @@ test('expanded profiles validate choices, dates and zero income, and count Canva
   const all=Object.fromEntries(PROFILE_FIELDS.map(key=>[key,'prepared']));
   all.noMiddleName='Yes';
   assert.equal(profileCompleteness(all).ready,true);
+});
+
+test('toolbar icon opens the dashboard in a full Chrome tab', async () => {
+  const clicked = event();
+  const opened = [];
+  const behavior = [];
+  const chrome = {
+    sidePanel: {setPanelBehavior: async settings => behavior.push(settings)},
+    action: {onClicked: clicked},
+    tabs: {create: async tab => opened.push(tab)},
+    runtime: {getURL: path => `chrome-extension://test/${path}`, onMessage: event(), onStartup: event()},
+    alarms: {onAlarm: event()}, notifications: {onClicked: event()},
+  };
+  const source = fs.readFileSync('SpotAlert/chrome_extension/background.js', 'utf8').replace(/^import .*;\n/gm, '');
+  vm.runInNewContext(source, {chrome, console, ALARM_PREFIX: 'test', createEngine: () => ({initialize: async () => {}, dispatch: async () => {}})});
+  clicked.emit();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(behavior[0].openPanelOnActionClick, false);
+  assert.equal(opened[0].url, 'chrome-extension://test/panel.html');
+  assert.equal(opened[0].active, true);
+});
+
+test('saved applicants migrate, switch independently and retain their own passwords', async () => {
+  const {engine, api} = await setup();
+  const {PROFILE_KEY, PROFILES_KEY} = await import('../SpotAlert/chrome_extension/profile.js');
+  api.data[PROFILE_KEY] = {firstName: 'Alex', registrationPassword: 'AlexPassword123!'};
+  const original = await engine.dispatch({type: 'profiles'});
+  assert.equal(original.profiles[0].details.firstName, 'Alex');
+  await engine.dispatch({type: 'create-profile'});
+  await engine.dispatch({type: 'save-profile', name: 'Sam', profile: {firstName: 'Sam', registrationPassword: 'SamPassword123!'}});
+  const secondId = api.data[PROFILES_KEY].activeId;
+  await engine.dispatch({type: 'select-profile', id: original.activeId});
+  assert.equal(api.data[PROFILE_KEY].registrationPassword, 'AlexPassword123!');
+  await engine.dispatch({type: 'select-profile', id: secondId});
+  assert.equal(api.data[PROFILE_KEY].registrationPassword, 'SamPassword123!');
+  assert.ok(!JSON.stringify(await engine.state()).includes('SamPassword'));
+  await engine.dispatch({type: 'clear-profile'});
+  assert.equal(api.data[PROFILE_KEY].firstName, 'Alex');
+  assert.equal(api.data[PROFILES_KEY].profiles.length, 1);
+});
+
+test('Start Application refuses weekend move-in dates', async () => {
+  const {startCanvasApplication} = await import('../SpotAlert/chrome_extension/profile.js');
+  assert.equal((await startCanvasApplication('24-10-2026', 0)).started, false);
+  assert.equal((await startCanvasApplication('25-10-2026', 0)).started, false);
+});
+
+test('client questionnaire imports answers and optional existing account passwords', async () => {
+  const {clientQuestionnaire, parseClientReply} = await import('../SpotAlert/chrome_extension/clients.js');
+  const blank = clientQuestionnaire('Alex');
+  assert.ok(blank.includes('Password:'));
+  assert.match(blank, /Otherwise leave it blank/);
+  assert.ok(!blank.includes('IBAN:'));
+  assert.throws(() => parseClientReply(blank), /no completed/);
+  const reply = blank.replace('First name: ', 'First name: Alex').replace('Email: ', 'Email: alex@example.com');
+  assert.equal(parseClientReply(reply).firstName, 'Alex');
+  assert.throws(() => parseClientReply(reply.replace('First name: Alex', 'First name: Alex\nFirst name: Sam')), /more than once/);
+  assert.throws(() => parseClientReply(reply.replace('First name: Alex', 'Unknown field: secret')), /Unrecognized/);
+  const withPassword = reply.replace('Password: ', 'Password: ClientExisting123!');
+  assert.equal(parseClientReply(withPassword).registrationPassword, 'ClientExisting123!');
+  const {engine, api} = await setup();
+  const {PROFILE_KEY, PROFILES_KEY} = await import('../SpotAlert/chrome_extension/profile.js');
+  await engine.dispatch({type:'import-client-profile', name:'Alex client', reply});
+  assert.equal(api.data[PROFILE_KEY].email, 'alex@example.com');
+  assert.equal(api.data[PROFILES_KEY].profiles.length, 2);
+  assert.ok(!JSON.stringify(await engine.state()).includes('alex@example.com'));
 });

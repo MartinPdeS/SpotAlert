@@ -114,9 +114,9 @@ def main():
                 expect(panel.locator("#availability-popup")).to_be_visible()
                 expect(panel.locator("#availability-listings")).to_contain_text("Superior Studio A")
                 expect(panel.locator("#availability-listings")).to_contain_text("€ 1.050")
-                expect(panel.locator("#availability-listings a")).to_have_attribute("href", URL.replace("floorplans.aspx", "availableunits.aspx?myFloorPlanId=101"))
+                expect(panel.locator("#availability-listings").get_by_role("button", name="Apply")).to_be_visible()
                 with context.expect_page() as application:
-                    panel.locator("#availability-listings a").click()
+                    panel.locator("#availability-listings").get_by_role("button", name="Apply").click()
                 expect(application.value.locator("h1")).to_have_text("Application page")
                 dismiss()
                 state["b"] = True

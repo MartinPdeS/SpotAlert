@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "SpotAlert",
   "version": "0.3.0",
-  "description": "Monitor supported website availability from a Chrome side panel.",
+  "description": "Monitor supported website availability from a full-width Chrome dashboard.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA07+mf6F6RiVZiUR8iBIMCvUaebSVrF7PKuwFmrPcNb5xig54li4puI9VCL3wMS3ELjYp5ptrivEnV4ChNdvwc6lv71qKtIt5YWBwPhpvc/yLB+hFs5Z/nflDALch8TzjeW+ytOriLEot6/b2I271aqG9pdYDFlYqEeSJkALMiGLQloOzGRpjIdsGPDoWZEl+e8uEEI2Srkd7m7NTsbSeOMUu+IN8tNa/rlAOIib8oeasop4NC+QPzADrwtC2S9ZS379v4WDamMcQ4yf2dK0zDO+m4SMBASR0eA0lkVICN/UpPndpWTq2pMh32hJ/jAXfzAjLpjhXc3SY8JRlXRyknwIDAQAB",
   "permissions": [
     "storage",

@@ -1,10 +1,12 @@
+export const PROFILES_KEY = "spotalert.application-profiles.v1";
 export const PROFILE_KEY = "spotalert.application-profile.v1";
 const yesNo = ["Yes", "No"];
 export const PROFILE_SECTIONS = [
+  {title: "Account password", helper: "Saved separately for this applicant and used when filling supported registration forms. You can also save an existing account password here; account creation remains manual.", fields: [["registrationPassword", "Password", "password"]]},
   {title: "Identity & contact", fields: [
     ["title", "Title", ["Mr.", "Ms.", "Mrs.", "Dr."]], ["firstName", "First name"], ["middleName", "Middle name"], ["noMiddleName", "I have no middle name", yesNo], ["lastName", "Last name"], ["dateOfBirth", "Date of birth", "date"], ["nationality", "Nationality"], ["countryOfResidence", "Country of residence"], ["email", "Email", "email"], ["phone", "Phone", "tel"], ["preferredName", "Preferred name"], ["contactMethod", "Preferred contact method", ["Call", "Text", "Email"]],
   ]},
-  {title: "Moving preferences", helper: "Leave the earliest move-in date empty for the first allowed date. Apply selects it automatically on Canvas booking pages.", fields: [["moveInFrom", "Earliest move-in date", "date"]]},
+  {title: "Moving preferences", helper: "Leave the earliest move-in date empty for the first allowed weekday. Weekend dates advance to the next allowed weekday when you apply.", fields: [["moveInFrom", "Earliest move-in date", "date"]]},
   {title: "Current housing", fields: [
     ["country", "Country"], ["address", "Street address"], ["addressLine2", "Address line two"], ["postalCode", "Postal code"], ["city", "City"], ["housingType", "Rent or own", ["Rent", "Own", "Other"]], ["residencyFrom", "Living here since", "date"], ["monthlyHousingCost", "Monthly rent / mortgage (€)", "number"], ["reasonForMoving", "Reason for moving"], ["managementCompany", "Management company"], ["managementPhone", "Management company phone", "tel"],
   ]},
@@ -20,6 +22,14 @@ export const PROFILE_SECTIONS = [
 ];
 export const PROFILE_FIELDS = PROFILE_SECTIONS.flatMap(section => section.fields.map(([field]) => field));
 
+export function temporaryRegistrationDetails() {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const registrationPassword = "Aa7!" + [...bytes].map(byte => alphabet[byte % alphabet.length]).join("");
+  const year = 1990 + bytes[0] % 11, month = 1 + bytes[1] % 12, day = 1 + bytes[2] % 28;
+  return {registrationPassword, dateOfBirth: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`};
+}
+
 export function profileCompleteness(profile = {}) {
   const required = ["title", "firstName", "lastName", "email", "phone", "dateOfBirth", "nationality", "countryOfResidence", "address", "postalCode", "city", "residencyFrom", "monthlyHousingCost", "reasonForMoving", "emergencyName", "emergencyRelationship", "emergencyPhone", "emergencyAddress", "emergencyPostalCode", "emergencyCity", "university", "study", "graduated", "phd", "hasPets", "hasVehicles", "receiveEmail", "receiveSms"];
   if (profile.noMiddleName !== "Yes") required.push("middleName");
@@ -31,7 +41,7 @@ export function profileCompleteness(profile = {}) {
 export function validateProfile(input = {}) {
   const profile = {};
   for (const field of PROFILE_FIELDS) {
-    profile[field] = String(input[field] || "").trim();
+    profile[field] = field === "registrationPassword" ? String(input[field] || "") : String(input[field] || "").trim();
     if (profile[field].length > 200) throw new Error("Personal information fields must be at most 200 characters.");
   }
   if (profile.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profile.email)) throw new Error("Enter a valid email address.");
@@ -62,7 +72,8 @@ export function selectMoveInDate(profile) {
   const [year, month, day] = (profile.moveInFrom || '').split('-').map(Number);
   const start = profile.moveInFrom ? new Date(year, month - 1, day) : minimum;
   const date = new Date(Math.max(start.getTime(), minimum.getTime()));
-  const excludedDays = excluded.split(',').filter(value => value.trim()).map(Number);
+  // Always skip weekends, even when the portal omits them from its configuration.
+  const excludedDays = [0, 6, ...excluded.split(',').filter(value => value.trim()).map(Number)];
   while (date <= maximum && excludedDays.includes(date.getDay())) date.setDate(date.getDate() + 1);
   if (date > maximum) return {count: 0, moveInMessage: 'No allowed move-in date is available on or after your preferred date.'};
   const value = `${String(date.getDate()).padStart(2, '0')}-${String(date.getMonth() + 1).padStart(2, '0')}-${date.getFullYear()}`;
@@ -75,10 +86,14 @@ export function selectMoveInDate(profile) {
 
 /** Advance only after Apply has selected an allowed move-in date. */
 export async function startCanvasApplication(expectedDate, waitMs = 12000) {
+  const [day, month, year] = String(expectedDate || '').split('-').map(Number);
+  const selectedDate = new Date(year, month - 1, day);
+  if (!Number.isFinite(selectedDate.getTime()) || [0, 6].includes(selectedDate.getDay())) return {started: false, message: 'Choose a weekday move-in date before starting the application.'};
   const end = Date.now() + waitMs;
   // Give the date-change handler time to update the lease summary.
   await new Promise(resolve => setTimeout(resolve, 750));
   do {
+    if (document.documentElement?.dataset.spotalertApplicationStopped === "true") return {started: false, message: "Application automation stopped."};
     // RentCafe replaces the lease form through jQuery.load without a tab load event.
     // This function runs in MAIN so it can observe that request and handler setup.
     const jq = globalThis.jQuery;
@@ -99,13 +114,16 @@ export async function startCanvasApplication(expectedDate, waitMs = 12000) {
   return {started: false, message: 'The move-in date is selected, but Start Application is unavailable. Check the booking tab.'};
 }
 
-/** Injected only after the user presses Fill application form. Never submits. */
+/** Fill known fields after Apply or Fill application form. Never submits. */
 export function fillApplicationForm(profile) {
   const normalize = text => String(text || "").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const autocompleteFields = {"given-name": "firstName", "family-name": "lastName", email: "email", tel: "phone", "street-address": "address", "address-line1": "address", "postal-code": "postalCode", "address-level2": "city", name: "fullName"};
   const patterns = [["firstName", /\b(first ?name|given ?name|voornaam)\b/], ["lastName", /\b(last ?name|sur ?name|family ?name|achternaam)\b/], ["email", /\b(e ?mail)\b/], ["phone", /\b(phone|telephone|mobile|telefoon)\b/], ["postalCode", /\b(postal ?code|post ?code|zip ?code|postcode|zip)\b/], ["city", /\b(city|town|woonplaats)\b/], ["address", /\b(street ?address|address ?line ?1|street|adres)\b/], ["fullName", /\b(full ?name|your name)\b/]];
   const values = {...profile, fullName: [profile.firstName, profile.lastName].filter(Boolean).join(" ")};
-  const canvas = location.hostname === "canvas-world.securerc.co.uk" && /oleapplication\.aspx$/i.test(location.pathname);
+  const supported = ["canvas-world.securerc.co.uk", "southeast-thisisourdomain.securerc.co.uk", "thisisourdomain.securerc.co.uk"].includes(location.hostname);
+  const canvas = supported && /oleapplication\.aspx$/i.test(location.pathname) && !!document.querySelector('#ProspectFirstName');
+  const registration = supported && /oleapplication\.aspx$/i.test(location.pathname) && new URL(location.href).searchParams.get("stepname")?.toLowerCase() === "registration";
+  const registrationFields = {txtName: "firstName", txtName2: "lastName", txtEmail: "email", txtPhone: "phone", BirthDate: "dateOfBirth", txtPassword: "registrationPassword"};
   const exact = {
     Salutation: "title", ProspectFirstName: "firstName", ProspectMiddleName: "middleName", chkMiddleName: "noMiddleName", ProspectLastName: "lastName", ProspectPhone: "phone", ProspectEmail: "email", NickName: "preferredName", LeaseTerm: null,
     EmergencyContactName: "emergencyName", EmergencyRelationship: "emergencyRelationship", EmergencyPhone: "emergencyPhone", EmergencyCellPhone: "emergencyMobile", drpDLCountry: "identificationCountry", DLNo: "identificationNumber",
@@ -127,9 +145,12 @@ export function fillApplicationForm(profile) {
     const autocomplete = (input.getAttribute("autocomplete") || "").split(/\s+/).at(-1);
     const labels = [...(input.labels || [])].map(label => label.textContent).join(" ");
     const description = normalize([labels, input.getAttribute("aria-label"), input.name, input.id, input.placeholder].filter(Boolean).join(" "));
-    if (/\b(confirm|repeat|verify|confirmation|captcha|password|search|username)\b/.test(description)) continue;
+    const registrationPassword = registration && id === "txtPassword" && input.type === "password";
+    if (/\b(confirm|repeat|verify|confirmation|captcha|search|username)\b/.test(description) || (/\bpassword\b/.test(description) && !registrationPassword)) continue;
     let field;
-    if (canvas) {
+    if (registration) {
+      field = registrationFields[id];
+    } else if (canvas) {
       field = exact[id] || dynamic.find(([pattern]) => pattern.test(id))?.[1];
       if (/^(?:ProspectDOB\d*|DOBLEASEBUT_REQINFO\d+)$/i.test(id)) field = "dateOfBirth";
       if (input.type === "radio" && ["hasPets", "hasVehicles"].includes(input.name)) field = input.name;
@@ -155,7 +176,7 @@ export function fillApplicationForm(profile) {
         if (!option) continue;
         value = option.value;
       } else {
-        if (input.tagName === "INPUT" && !["text", "email", "tel", "date", "number"].includes(input.type)) continue;
+        if (input.tagName === "INPUT" && !["text", "email", "tel", "date", "number"].includes(input.type) && !registrationPassword) continue;
         if (dateFields.has(field) && input.type !== "date") { const [year, month, day] = value.split('-'); value = `${day}-${month}-${year}`; }
       }
       const prototype = input.tagName === "SELECT" ? HTMLSelectElement.prototype : input.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;

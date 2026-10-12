@@ -1,16 +1,16 @@
 export const EMAIL_KEY = "spotalert.resend.v1";
 export const CONTACT_KEY = "spotalert.notification-destinations.v1";
-export async function sendEmailAlert(api, alert, subject, body, force = false) {
+export async function sendEmailAlert(api, alert, subject, body, force = false, delivery = null) {
   const settings = await api.storage.local.get([EMAIL_KEY, CONTACT_KEY]);
   const email = settings[EMAIL_KEY] || {};
   if (!force && !email.enabled) return {skipped: true};
-  const to = settings[CONTACT_KEY]?.email?.trim();
+  const to = delivery?.to || settings[CONTACT_KEY]?.email?.trim();
   if (!email.apiKey || !to) throw new Error("Save an email destination and Resend API key in Notifications.");
   let response;
   try {
     response = await fetch("https://api.resend.com/emails", {
       method: "POST", headers: {"Content-Type": "application/json", Authorization: `Bearer ${email.apiKey}`, "Idempotency-Key": `spotalert-${alert.id}`},
-      body: JSON.stringify({from: email.sender || "onboarding@resend.dev", to: [to], subject: subject.slice(0, 200), text: body.slice(0, 12000)}),
+      body: JSON.stringify({from: email.sender || "onboarding@resend.dev", to: [to], subject: subject.slice(0, 200), text: body.slice(0, 12000), ...(delivery?.replyTo ? {reply_to: delivery.replyTo} : {})}),
       signal: AbortSignal.timeout(20000),
     });
   } catch { throw new Error("Could not reach Resend. Check your internet connection and try again."); }

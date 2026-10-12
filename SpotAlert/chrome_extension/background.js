@@ -4,7 +4,10 @@ import {createEngine} from "./engine.js";
 const engine = createEngine(chrome);
 const ready = engine.initialize();
 ready.catch(console.error);
-chrome.sidePanel.setPanelBehavior({openPanelOnActionClick: true}).catch(console.error);
+chrome.sidePanel.setPanelBehavior({openPanelOnActionClick: false}).catch(console.error);
+chrome.action.onClicked.addListener(() => {
+  chrome.tabs.create({url: chrome.runtime.getURL("panel.html"), active: true}).catch(console.error);
+});
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id || message?.target === "audio") return false;

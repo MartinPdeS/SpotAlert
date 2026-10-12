@@ -57,7 +57,7 @@ export async function readPage(rule, waitMs = 12000) {
         const beds = field('[data-selenium-id^="Bed_"], [data-selenium-id^="Beds_"]').slice(0, 40);
         const baths = field('[data-selenium-id^="Bath_"], [data-selenium-id^="Baths_"]').slice(0, 40);
         const action = control.getAttribute?.("onclick") || "";
-        const floorplanId = action.match(/myFloorPlanId=(\d+)/i)?.[1]
+        const floorplanId = action.match(/(?:myFloorPlanId|floorPlans|FloorPlanID)=(\d+)/i)?.[1]
           || control.getAttribute?.("href")?.match(/[?&]myFloorPlanId=(\d+)/i)?.[1]
           || section?.id?.match(/^FP_Detail_(\d+)/)?.[1]
           || section?.querySelector?.('[id^="FP_Image_"]')?.id?.match(/FP_Image_(\d+)/)?.[1] || null;
@@ -66,7 +66,7 @@ export async function readPage(rule, waitMs = 12000) {
         const id = floorplanId ? `floorplan:${floorplanId}` : cellId ? `listing:${cellId.replace(/^(Availability|Apply)_/, "")}` : name || `element:${index + 1}`;
         let applicationUrl = null;
         const href = control.getAttribute?.("href") || control.getAttribute?.("data-href")
-          || action.match(/(?:window\.)?location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/)?.[1];
+          || (!/['"]\s*\+/.test(action) ? action.match(/(?:window\.)?location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/)?.[1] : null);
         if (href) {
           try {
             const candidate = new URL(href, location.href);
@@ -101,7 +101,7 @@ export function openApplication(listing) {
   const controls = [...document.querySelectorAll('td[data-selenium-id^="Apply_"] [data-selenium-id="ApplyNow"], td[data-selenium-id^="Availability_"] button, td[data-selenium-id^="Availability_"] a')];
   const control = controls.find((item) => {
     const section = item.closest('[id^="FP_Detail_"], .accordion-inner, [data-selenium-id^="FProw_"]');
-    const floorplan = (item.getAttribute("onclick") || "").match(/myFloorPlanId=(\d+)/i)?.[1]
+    const floorplan = (item.getAttribute("onclick") || "").match(/(?:myFloorPlanId|floorPlans|FloorPlanID)=(\d+)/i)?.[1]
       || (item.getAttribute("href") || "").match(/[?&]myFloorPlanId=(\d+)/i)?.[1]
       || section?.id?.match(/^FP_Detail_(\d+)/)?.[1]
       || section?.querySelector('[id^="FP_Image_"]')?.id?.match(/FP_Image_(\d+)/)?.[1];
@@ -128,27 +128,31 @@ export function openApplication(listing) {
 
 /** Read only the selected floor plan's real Book links. Never submits an application. */
 export async function canvasBookingLink(listing, waitMs = 12000) {
+  const floorplanId = listing.floorplanId || listing.id?.match(/^floorplan:(\d+)$/)?.[1];
   const end = Date.now() + waitMs;
   do {
+    if (document.documentElement?.dataset.spotalertApplicationStopped === "true") return {error: "Application automation stopped."};
     if (/termsandotheritems\.aspx$/i.test(location.pathname)) return {url: location.href};
     const buttons = [...document.querySelectorAll('input[type="button"], button')].filter(button => !button.disabled && /^book\b/i.test((button.innerText || button.value || button.textContent || '').trim()));
     const actions = buttons.map(button => {
       const args = (button.getAttribute('onclick') || '').match(/ApplyNowClick\(["'](\d+)["'],\s*["'](\d+)["'],\s*["'](\d+)["'],\s*["'](\d{1,2}-\d{1,2}-\d{4})["'],\s*["']termsandotheritems\.aspx["']/i);
-      if (!args || (listing.floorplanId && args[2] !== String(listing.floorplanId))) return null;
+      if (!args || (floorplanId && args[2] !== String(floorplanId))) return null;
       const [day, month, year] = args[4].split('-').map(Number);
-      return {button, date: new Date(year, month - 1, day).getTime()};
+      return {button, floorplanId: args[2], date: new Date(year, month - 1, day).getTime()};
     }).filter(Boolean).sort((a, b) => a.date - b.date);
+    if (!floorplanId && new Set(actions.map(action => action.floorplanId)).size > 1) return {error: "Choose a floor plan on the website; the saved listing does not identify which plan to book."};
     if (actions.length) { actions[0].button.click(); return {opened: true}; }
     const links = [...document.querySelectorAll('a[href]')].filter(link => /^book\b/i.test((link.innerText || link.textContent || '').trim()));
     const candidates = links.map(link => {
       try {
         const url = new URL(link.getAttribute('href'), location.href);
         if (url.origin !== location.origin || !/termsandotheritems\.aspx$/i.test(url.pathname)) return null;
-        if (listing.floorplanId && url.searchParams.get('FloorPlanID') !== String(listing.floorplanId)) return null;
+        if (floorplanId && url.searchParams.get('FloorPlanID') !== String(floorplanId)) return null;
         const [day, month, year] = (url.searchParams.get('MoveInDate') || '').split('-').map(Number);
-        return {url: url.href, date: new Date(year, month - 1, day).getTime()};
+        return {url: url.href, floorplanId: url.searchParams.get('FloorPlanID'), date: new Date(year, month - 1, day).getTime()};
       } catch { return null; }
     }).filter(Boolean).sort((a, b) => (a.date || Infinity) - (b.date || Infinity));
+    if (!floorplanId && new Set(candidates.map(candidate => candidate.floorplanId)).size > 1) return {error: "Choose a floor plan on the website; multiple plans are offered."};
     if (candidates.length) return {url: candidates[0].url};
     await new Promise(resolve => setTimeout(resolve, 250));
   } while (Date.now() < end);

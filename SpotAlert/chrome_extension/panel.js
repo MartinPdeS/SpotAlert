@@ -1,7 +1,8 @@
+import {clientQuestionnaire, parseClientReply, CLIENT_FIELDS} from "./clients.js";
 import {STORAGE_KEY, availabilityArrivals, siteError, listingKey, safeListingUrl, sitePattern, validateMonitor} from "./core.js";
 
 import {UI_KEY, freshness, availabilityTotals} from "./ui.js";
-import {PROFILE_KEY, PROFILE_FIELDS, PROFILE_SECTIONS, profileCompleteness} from "./profile.js";
+import {PROFILE_KEY, PROFILES_KEY, PROFILE_FIELDS, PROFILE_SECTIONS, profileCompleteness, temporaryRegistrationDetails} from "./profile.js";
 
 const $ = (selector) => document.querySelector(selector);
 let value = {monitors: []};
@@ -69,11 +70,22 @@ async function loadState() {
       const [state, preferences] = await Promise.all([request({type: "state"}), chrome.storage.local.get([PROFILE_KEY, UI_KEY, CONTACT_KEY, EMAIL_KEY])]);
       value = state;
       personalProfile = preferences[PROFILE_KEY] || {};
+      const library = await request({type: "profiles"});
+      if (!personalDirty) {
+        $("#saved-profile").replaceChildren(...library.profiles.map(item => element("option", {value: item.id}, item.name)));
+        $("#saved-profile").value = library.activeId;
+        $("#saved-profile").dataset.activeId = library.activeId;
+        $("#profile-name").value = library.profiles.find(item => item.id === library.activeId)?.name || "";
+        $("#personal-registrationPassword").type = "password";
+        const reveal = document.querySelector(".password-reveal");
+        reveal.textContent = "Show"; reveal.setAttribute("aria-pressed", "false"); reveal.setAttribute("aria-label", "Show account password");
+      }
       if (!personalDirty) for (const field of PROFILE_FIELDS) $(`#personal-${field}`).value = personalProfile[field] || "";
       compactView = Boolean(preferences[UI_KEY]?.compact);
       if (!contactsLoaded) {
         $("#notification-phone").value = preferences[CONTACT_KEY]?.phone || "";
         $("#notification-email").value = preferences[CONTACT_KEY]?.email || "";
+        $("#client-reply-to").value = preferences[CONTACT_KEY]?.email || "";
         $("#email-enabled").checked = Boolean(preferences[EMAIL_KEY]?.enabled);
         $("#email-api-key").value = preferences[EMAIL_KEY]?.apiKey || "";
         $("#email-sender").value = preferences[EMAIL_KEY]?.sender || "onboarding@resend.dev";
@@ -81,6 +93,7 @@ async function loadState() {
       }
       if (!value.monitors.some((monitor) => monitor.id === selectedId)) selectedId = value.monitors[0]?.id || null;
       render();
+      updateProfilePresentation();
     } while (reloadState);
   } finally { loadingState = false; }
 }
@@ -114,7 +127,7 @@ function render() {
   $("#apartment-count").textContent = `${totals.unknownCounts ? "≥" : ""}${totals.apartments}`;
   $("#apartment-count-note").hidden = !totals.unknownCounts;
   $("#apartment-count").title = totals.unknownCounts ? "At least one apartment per available floor plan; some sites do not publish exact unit counts. Totals use the last successful results." : "Published unit counts from the last successful results.";
-  $("#stop-all").disabled = !value.monitors.some(monitor => monitor.enabled || busy(monitor));
+  $("#stop-all").disabled = !value.monitors.some(monitor => monitor.enabled || busy(monitor) || monitor.application?.status === "running");
   $("#active-count").textContent = value.monitors.filter((monitor) => monitor.enabled).length;
   $("#available-count").textContent = totals.websites;
   $("#check-count").textContent = value.monitors.reduce((sum, monitor) => sum + monitor.checks, 0);
@@ -169,6 +182,48 @@ function renderDetail() {
   }));
   toolbar.append(element("label", {class: "refresh-control"}, "Refresh every", refresh), element("button", {id: "configure-monitor", class: "small-button", onclick: () => openEditor(monitor)}, "Configure monitor"));
   root.append(toolbar);
+  const attention = monitor.error ? element("section", {class: "attention-card", "aria-label": "Monitoring status"}) : null;
+  if (attention) {
+    attention.append(element("h3", {class: "attention-title"}, "Needs attention"));
+    if (monitor.error) {
+      const titles = {verification: "Complete website verification", login: "Sign in to the website", loading: "Website did not finish loading", selector: "Update the availability rule", permission: "Allow website access", navigation: "Return to the monitored page"};
+      const row = element("div", {class: "attention-monitor", role: "alert"}, element("h4", {}, titles[monitor.errorKind] || "Monitoring check failed"), element("p", {}, monitor.error));
+      const actions = element("div", {class: "control-row"}, actionButton("Open affected tab ↗", "open-affected", monitor));
+      if (["permission", "selector"].includes(monitor.errorKind)) actions.append(element("button", {class: "secondary-button", onclick: () => openEditor(monitor)}, monitor.errorKind === "permission" ? "Review website access" : "Edit rule"));
+      row.append(actions);
+      attention.append(row);
+    }
+    root.append(attention);
+  }
+  if (monitor.application?.missingFields?.length || monitor.application?.structure) {
+    const app = monitor.application;
+    const card = element("section", {class: "application-progress", role: "status"}, element("h4", {}, app.missingFields?.length ? "Missing application details" : "Unfamiliar application form"), element("p", {}, app.message));
+    const actions = element("div", {class: "control-row"}, element("button", {class: "secondary-button", onclick: guard(() => request({type: "open-application-tab", id: monitor.id}))}, "Open application tab ↗"));
+    if (app.missingFields?.length) {
+      const list = element("ul", {class: "application-missing"});
+      for (const field of app.missingFields) list.append(element("li", {}, element("strong", {}, field.label), element("span", {}, field.reason === "invalid" ? "Needs correction" : "Required")));
+      card.append(list, element("p", {class: "helper"}, "Update saved details below, or complete fields directly on the website. Continue directly on the website."));
+      actions.append(element("button", {class: "secondary-button", onclick: () => {
+        $("#personal-tab").click();
+        document.querySelectorAll(".profile-group").forEach(group => { group.open = true; });
+        $("#personal-view").scrollIntoView({behavior: "smooth"});
+      }}, "Edit personal information"));
+    }
+    if (app.structure) {
+      const details = element("details", {class: "application-structure"}, element("summary", {}, `Unfamiliar form · ${app.structure.fields.length} fields`));
+      const list = element("ul", {});
+      for (const field of app.structure.fields) list.append(element("li", {}, `${field.label} · ${field.type}${field.required ? " · required" : ""}`));
+      details.append(element("p", {class: "helper"}, "Field labels and types only. Entered values and URL tracking parameters are excluded."), list);
+      card.append(details);
+      actions.append(element("button", {class: "secondary-button", onclick: () => {
+        const url = URL.createObjectURL(new Blob([JSON.stringify(app.structure, null, 2)], {type: "application/json"}));
+        element("a", {href: url, download: "spotalert-form-structure.json"}).click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }}, "Download form structure"));
+    }
+    card.append(actions);
+    root.append(card);
+  }
   const filterLabels = {studio: "Studios", "1-bedroom": "1 bedroom", "2-bedroom": "2 bedrooms", "3-plus": "3+ bedrooms"};
   const filterText = (monitor.filters?.types || []).map((type) => filterLabels[type]).join(", ");
   const floors = monitor.filters?.floorplans?.length || 0;
@@ -181,13 +236,12 @@ function renderDetail() {
   else if (monitor.error) { caption = {verification: "Verification required", login: "Sign in required", loading: "Page still loading", selector: "Rule needs updating", permission: "Website access required", navigation: "Tab navigated away"}[monitor.errorKind] || "The last check failed"; symbol = "!"; sub = monitor.enabled ? `Retry scheduled after ${monitor.consecutiveErrors || 1} failed ${monitor.consecutiveErrors === 1 ? "check" : "checks"}.` : "Fix the rule or page access, then try again."; }
   else if (monitor.phase === "waiting-hours" && monitor.enabled) { caption = "Waiting for monitoring hours"; symbol = "◷"; }
   else if (monitor.enabled) { caption = "Watching for availability"; symbol = "✓"; sub = ""; }
-  root.append(element("div", {class: "activity-line", role: "status"}, element("span", {class: `activity-symbol${busy(monitor) ? " spinning" : ""}`, "aria-hidden": "true"}, symbol), element("div", {}, element("div", {class: "activity-caption"}, caption), sub && element("div", {class: "activity-sub"}, sub))));
+  if (!monitor.error || busy(monitor)) root.append(element("div", {class: "activity-line", role: "status"}, element("span", {class: `activity-symbol${busy(monitor) ? " spinning" : ""}`, "aria-hidden": "true"}, symbol), element("div", {}, element("div", {class: "activity-caption"}, caption), sub && element("div", {class: "activity-sub"}, sub))));
   root.append(element("div", {class: "telemetry"},
     element("div", {}, element("span", {}, "Last successful check"), element("strong", {}, clock(monitor.lastCheckedAt)), element("span", {class: "freshness", "data-freshness": monitor.id})),
     element("div", {}, element("span", {}, "Next refresh"), element("strong", {"data-next": monitor.id}, nextLabel(monitor))),
     element("div", {}, element("span", {}, "Check duration"), element("strong", {}, monitor.lastDurationMs === null ? "—" : `${(monitor.lastDurationMs / 1000).toFixed(1)}s`)),
   ));
-  if (monitor.error) root.append(element("div", {class: "error-box", role: "alert"}, element("p", {}, siteError(monitor, monitor.error)), actionButton("Open affected tab ↗", "open-affected", monitor)));
   const technical = element("details", {class: "technical-details"}, element("summary", {}, "Technical details & activity"));
   technical.open = technicalOpen;
   technical.addEventListener("toggle", () => { technicalOpen = technical.open; });
@@ -333,13 +387,12 @@ $("#export").addEventListener("click", () => {
 });
 $(".brand").addEventListener("click", (event) => { event.preventDefault(); window.scrollTo({top: 0, behavior: "smooth"}); });
 function listingButton(monitor, sample) {
-  if (new URL(monitor.url).hostname === "canvas-world.securerc.co.uk") return element("button", {class: "text-button listing-link", onclick: guard(async () => {
+  const button = element("button", {class: "text-button listing-link", onclick: guard(async () => {
     const result = await request({type: "open-listing", id: monitor.id, listingId: listingKey(sample)});
     if (result.moveInMessage) toast(result.moveInMessage);
   })}, "Apply ↗");
-  const url = safeListingUrl(sample.applicationUrl, monitor.url);
-  if (url) return element("a", {class: "text-button listing-link", href: url, target: "_blank", rel: "noopener noreferrer"}, "Apply ↗");
-  return element("button", {class: "text-button listing-link", onclick: guard(() => request({type: "open-listing", id: monitor.id, listingId: listingKey(sample)}))}, "Open application ↗");
+  button.disabled = monitor.application?.status === "running";
+  return button;
 }
 $("#editor-test-alert").addEventListener("click", guard(async () => {
   const button = $("#editor-test-alert");
@@ -377,7 +430,7 @@ $("#open-availability").addEventListener("click", guard(async () => {
   $("#availability-popup").close();
 }));
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && (changes[PROFILE_KEY] || changes[UI_KEY])) loadState().catch(error => toast(error.message, true));
+  if (area === "local" && (changes[PROFILE_KEY] || changes[PROFILES_KEY] || changes[UI_KEY])) loadState().catch(error => toast(error.message, true));
   if (area === "local" && changes[STORAGE_KEY]) {
     const change = changes[STORAGE_KEY];
     availabilityQueue.push(...availabilityArrivals(change.oldValue?.monitors, change.newValue?.monitors).filter(m => m.alert?.test || change.newValue?.alertPreferences?.popup !== false));
@@ -391,10 +444,15 @@ setInterval(() => {
   if (monitor && node) node.textContent = nextLabel(monitor);
   updateFreshness();
 }, 1000);
-for (const section of PROFILE_SECTIONS) {
+const orderedSections = [...PROFILE_SECTIONS].sort((a, b) => {
+  const order = ["Identity & contact", "Moving preferences", "Account password"];
+  return (order.indexOf(a.title) < 0 ? 99 : order.indexOf(a.title)) - (order.indexOf(b.title) < 0 ? 99 : order.indexOf(b.title));
+});
+for (const [sectionIndex, section] of orderedSections.entries()) {
   const details = element("details", {class: "profile-group"});
   details.open = section.title === "Identity & contact";
-  details.append(element("summary", {}, section.title));
+  details.dataset.fields = section.fields.map(([key]) => key).join(",");
+  details.append(element("summary", {}, element("span", {class: "profile-section-number"}, String(sectionIndex + 1).padStart(2, "0")), element("span", {class: "profile-section-title"}, section.title), element("span", {class: "profile-section-count"})));
   if (section.helper) details.append(element("p", {class: "helper"}, section.helper));
   const grid = element("div", {class: "profile-fields"});
   for (const [key, label, type] of section.fields) {
@@ -402,7 +460,16 @@ for (const section of PROFILE_SECTIONS) {
     const input = Array.isArray(type) ? element("select", {id: `personal-${key}`}) : element("input", {id: `personal-${key}`, type: type || "text", maxlength: "200"});
     if (Array.isArray(type)) for (const choice of ["", ...type]) input.append(element("option", {value: choice}, choice || "Choose…"));
     if (type === "number") { input.min = "0"; input.step = "0.01"; }
-    wrapper.append(input);
+    if (type === "password") {
+      const reveal = element("button", {type: "button", class: "password-reveal", "aria-label": "Show account password", "aria-pressed": "false", onclick: () => {
+        const show = input.type === "password";
+        input.type = show ? "text" : "password";
+        reveal.textContent = show ? "Hide" : "Show";
+        reveal.setAttribute("aria-label", show ? "Hide account password" : "Show account password");
+        reveal.setAttribute("aria-pressed", String(show));
+      }}, "Show");
+      wrapper.append(element("div", {class: "profile-password"}, input, reveal));
+    } else wrapper.append(input);
     grid.append(wrapper);
   }
   details.append(grid);
@@ -410,12 +477,53 @@ for (const section of PROFILE_SECTIONS) {
 }
 loadState().catch((error) => toast(error.message, true));
 
-$("#personal-form").addEventListener("input", () => { personalDirty = true; });
+function updateProfilePresentation() {
+  const name = $("#profile-name").value.trim();
+  $("#profile-avatar").textContent = name.split(/\s+/).map(word => word[0]).slice(0, 2).join("").toUpperCase() || "＋";
+  let filled = 0;
+  for (const group of document.querySelectorAll(".profile-group")) {
+    const keys = group.dataset.fields.split(",");
+    const count = keys.filter(key => $(`#personal-${key}`).value.trim()).length;
+    filled += count;
+    group.querySelector(".profile-section-count").textContent = `${count}/${keys.length}`;
+  }
+  $("#profile-section-progress").textContent = `${filled} details added`;
+  $("#profile-save-status").textContent = personalDirty ? "Unsaved changes" : "All changes saved";
+  $("#profile-save-status").classList.toggle("unsaved", personalDirty);
+}
+$("#saved-profile").addEventListener("change", guard(async () => {
+  if (personalDirty) {
+    $("#saved-profile").value = $("#saved-profile").dataset.activeId;
+    toast("Save your changes before loading another profile.", true);
+    return;
+  }
+  await request({type: "select-profile", id: $("#saved-profile").value});
+  await loadState();
+  toast("Profile loaded. Apply will use these details.");
+}));
+$("#new-profile").addEventListener("click", guard(async () => {
+  if (personalDirty) { toast("Save your changes before creating a profile.", true); return; }
+  await request({type: "create-profile"});
+  await loadState();
+  $("#profile-name").focus(); $("#profile-name").select();
+}));
+$("#personal-form").addEventListener("input", event => { if (event.target.id !== "saved-profile") personalDirty = true; updateProfilePresentation(); });
+$("#generate-registration-details").addEventListener("click", () => {
+  const details = temporaryRegistrationDetails();
+  for (const [key, value] of Object.entries(details)) {
+    const input = $(`#personal-${key}`);
+    input.value = value;
+    input.closest("details").open = true;
+  }
+  personalDirty = true;
+  updateProfilePresentation();
+  toast("Temporary details generated. Save personal information to use them.");
+});
 $("#personal-form").addEventListener("submit", async event => {
   event.preventDefault();
   try {
     const profile = Object.fromEntries(PROFILE_FIELDS.map(field => [field, $(`#personal-${field}`).value]));
-    await request({type: "save-profile", profile});
+    await request({type: "save-profile", profile, name: $("#profile-name").value});
     personalDirty = false;
     $("#personal-error").hidden = true;
     await loadState();
@@ -429,11 +537,11 @@ $("#clear-personal").addEventListener("click", guard(async () => {
   await request({type: "clear-profile"});
   personalDirty = false;
   await loadState();
-  for (const field of PROFILE_FIELDS) $(`#personal-${field}`).value = "";
   $("#personal-error").hidden = true;
-  toast("Saved personal information deleted.");
+  toast("Profile deleted.");
 }));
 $("#fill-application").addEventListener("click", guard(async () => {
+  if (personalDirty) { toast("Save your changes before filling an application.", true); return; }
   const button = $("#fill-application");
   button.disabled = true;
   try {
@@ -495,7 +603,7 @@ $("#export-debug").addEventListener("click", () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
 
-const workspaceTabs = ["monitoring", "notifications", "personal"];
+const workspaceTabs = ["monitoring", "notifications", "personal", "clients"];
 function switchTab(name) {
   for (const tab of workspaceTabs) {
     const active = tab === name;
@@ -586,3 +694,39 @@ $("#test-email").addEventListener("click", guard(async () => {
 $("#notification-contact-form").addEventListener("input", () => {
   $("#notification-save-status").textContent = "Unsaved changes";
 });
+
+function updateQuestionnaire() { $("#client-questionnaire").textContent = clientQuestionnaire($("#client-name").value); }
+$("#client-name").addEventListener("input", updateQuestionnaire);
+updateQuestionnaire();
+$("#copy-client-questionnaire").addEventListener("click", guard(async () => {
+  await navigator.clipboard.writeText(clientQuestionnaire($("#client-name").value)); toast("Questionnaire copied.");
+}));
+$("#send-client-questionnaire").addEventListener("click", guard(async () => {
+  const button = $("#send-client-questionnaire"); button.disabled = true;
+  try {
+    await request({type: "send-client-questionnaire", name: $("#client-name").value, to: $("#client-email").value, replyTo: $("#client-reply-to").value});
+    $("#client-send-status").textContent = "Email sent. Paste their reply here when it arrives.";
+  } finally { button.disabled = false; }
+}));
+let reviewedClientReply = null;
+$("#client-reply").addEventListener("input", () => { reviewedClientReply = null; $("#import-client-profile").hidden = true; $("#client-import-preview").hidden = true; });
+$("#review-client-reply").addEventListener("click", guard(() => {
+  reviewedClientReply = null; $("#import-client-profile").hidden = true;
+  const profile = parseClientReply($("#client-reply").value);
+  const preview = $("#client-import-preview");
+  const list = element("dl", {class: "client-answer-list"});
+  for (const [key, label] of CLIENT_FIELDS) if (profile[key]) list.append(element("dt", {}, label), element("dd", {}, key === "registrationPassword" ? "Password provided · hidden" : profile[key]));
+  preview.replaceChildren(element("h4", {}, "Review extracted answers"), list); preview.hidden = false;
+  reviewedClientReply = $("#client-reply").value; $("#import-client-profile").hidden = false;
+}));
+$("#import-client-profile").addEventListener("click", guard(async () => {
+  if (personalDirty) throw new Error("Save your edits in Personal information before importing a profile.");
+  if (!reviewedClientReply || reviewedClientReply !== $("#client-reply").value) throw new Error("Review the answers first.");
+  const button = $("#import-client-profile"); button.disabled = true;
+  try {
+    await request({type: "import-client-profile", name: $("#client-profile-name").value, reply: reviewedClientReply});
+    reviewedClientReply = null; button.hidden = true;
+    $("#client-import-status").textContent = "Profile created and selected.";
+    await loadState(); switchTab("personal"); toast("Client profile created. Review the details before applying.");
+  } finally { button.disabled = false; }
+}));

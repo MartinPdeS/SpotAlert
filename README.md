@@ -58,15 +58,20 @@ current housing, employment and income, emergency contacts, education, applicati
 choices, and optional identification/bank details. A completeness indicator tracks
 fields required by the current Canvas applicant form. Existing profiles are preserved.
 
-For Canvas, **Apply** opens the floor plan in a separate tab, follows **Book now**,
+For all supported locations, **Apply** opens the selected floor plan in a separate tab, follows **Book now**,
 selects the first allowed move-in date on or after your preference (or the earliest
-allowed date if none is saved), clicks **Start Application**, and fills the applicant
-form from saved details. Calendar limits and excluded weekends are respected. The
+allowed date if none is saved), clicks **Start Application**, and fills supported application
+steps from saved details. It follows ordinary Next/Continue actions until the website
+needs missing information, documents, verification, agreements, registration/login,
+payment, lease review, or final submission. Registration fields (including a saved
+password) are filled, but account creation is manual. A progress card shows where
+it stopped, opens the application tab, and offers Continue application after you
+complete the manual step. Stop application and Stop all halt automation. Calendar limits and excluded weekends are respected. The
 flow waits for Canvas's background form updates and leaves monitoring on its original
 tab. Login or verification prompts may require manual completion.
 
 Use **Fill application form** to fill an application already open in the active tab.
-Canvas fields use explicit mappings to keep applicant, employer and emergency-contact
+Known RentCafe applicant and registration fields use explicit mappings to keep applicant, employer and emergency-contact
 details separate. Existing entries are preserved except repeated applicant birth-date
 fields, which are synchronized with your saved date. Consent agreements and final
 application submission remain manual. Other supported sites use common English/Dutch
@@ -233,3 +238,9 @@ Emails are sent directly by the extension’s background worker to Resend; no lo
 Notification settings apply to every monitored location. Availability pop-ups also appear on open supported housing website pages, including while the panel is closed. Recent alerts (up to ten minutes old) survive page reloads until dismissed; dismissal is shared across website tabs. Reload existing website tabs after reloading the extension to install its page pop-up script.
 
 Canvas Rotterdam Blaak is monitored through its [RentCafe floor-plan portal](https://canvas-world.securerc.co.uk/onlineleasing/andre-van-der-louwbrug-4-rotterdam-3011-wm/floorplans.aspx), linked from the [Canvas location page](https://www.canvas-world.com/nl/locations/netherlands/rotterdam/blaak). The marketing page’s permanent “View apartment” links are not availability signals. The reader supports RentCafe Apply/Availability cells, including collapsed floorplans and responsive duplicates. Canvas also receives the global notifications, filters, application details, and debug capture controls. If Chrome shows a verification prompt, open the affected tab and complete it before checking again.
+
+Click the SpotAlert toolbar icon to open the dashboard in a full-width Chrome tab. Applications that need more details show a complete missing-field checklist, with shortcuts to Personal information and the application tab. Continue the application directly on the website; the dashboard has no resume controls. Unfamiliar application forms stop automatically and offer a downloadable field-structure report (labels and types, without entered values or URL tracking parameters) to help add support.
+
+Personal information supports named saved applicant profiles. Create or select a profile, then save its details. Apply and Fill application form use the selected saved profile, including its account password. Existing details migrate into My profile; profiles stay in Chrome local storage.
+
+The Clients tab prepares an email questionnaire using the configured Resend sender, with a client recipient and your reply-to address. Preview or copy it before sending. Paste the completed details block to review answers and create a new selected profile. The questionnaire includes an optional existing account password, stored with the imported profile and masked in the review preview. Identification numbers and banking details are not requested by email. Email replies are imported manually; Gmail access is not required.
