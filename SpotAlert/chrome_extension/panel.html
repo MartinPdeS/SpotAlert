@@ -77,7 +77,6 @@
     </section>
     <section id="clients-view" role="tabpanel" aria-labelledby="clients-tab" hidden>
       <div class="personal-heading"><div><span class="eyebrow">CLIENT ONBOARDING</span><h2>Prepare a client profile</h2><p>Ask once. Review the reply. Create a profile.</p></div></div>
-      <section class="client-overview"><div class="section-heading"><h3>Client readiness</h3><span class="muted">Saved profiles</span></div><div id="client-overview-list"></div></section>
       <div class="client-grid">
         <section class="client-card"><span class="eyebrow">01 · REQUEST DETAILS</span><h3>Send a questionnaire</h3><p class="helper">Uses your Resend settings from Notifications. Sending to clients requires a verified sender domain.</p>
           <label>Client name<input id="client-name" maxlength="80" placeholder="Alex"></label><label>Client email<input id="client-email" type="email" placeholder="alex@example.com"></label><label>Replies go to<input id="client-reply-to" type="email" placeholder="Your email address"></label>
@@ -91,22 +90,35 @@
     <section id="personal-view" role="tabpanel" aria-labelledby="personal-tab" hidden>
       <div class="personal-heading"><div><span class="eyebrow">APPLICATION PROFILES</span><h2>Personal information</h2><p>One profile. Ready for your next apartment.</p></div><span id="application-readiness" class="pill" role="status">Details needed</span></div>
     <form id="personal-form" class="personal-form">
+      <div class="profile-summary-grid">
       <section class="profile-hero">
         <div class="profile-avatar" id="profile-avatar" aria-hidden="true">ME</div>
         <div class="profile-hero-content"><div class="profile-picker"><label>Active profile<select id="saved-profile"></select></label><button type="button" id="new-profile" class="secondary-button">＋ New profile</button></div>
         <label class="profile-name-label">Profile name<input id="profile-name" maxlength="80" required placeholder="e.g. Alex"></label>
         <p class="helper">Apply uses this profile’s saved details.</p></div>
       </section>
+      <section class="client-overview"><div class="section-heading"><h3>Client readiness</h3><span class="muted">Saved profiles</span></div><div id="client-overview-list"></div></section>
+      </div>
       <div class="profile-preparation"><div><span class="eyebrow">APPLICATION READINESS</span><p id="readiness-description" class="helper"></p></div><span id="profile-section-progress" class="profile-progress-count"></span></div>
       <div id="profile-sections"></div>
       <section class="profile-folder"><div><strong>Local profile folder</strong><p id="profile-folder-status" class="helper">Keep a JSON copy alongside SpotAlert.</p></div><button type="button" id="enable-profile-folder" class="secondary-button">Use local folder</button><button type="button" id="open-profile-folder" class="secondary-button" hidden>See profile folder ↗</button></section>
       <details class="profile-tools"><summary>Test details &amp; profile management</summary><p class="helper">Generate test details for exploring forms. Replace the example birth date before submitting.</p><div class="control-row"><button type="button" id="generate-registration-details" class="secondary-button">Generate temporary password &amp; birth date</button><button type="button" id="clear-personal" class="danger-button">Delete profile</button></div></details>
+      <section class="signature-test" aria-labelledby="signature-test-title">
+        <h3 id="signature-test-title">Canvas agreement &amp; signature test</h3>
+        <section class="signature-test-card">
+          <h4>Agreements &amp; signature</h4>
+          <p class="helper">Checks the screening agreement after payment of application fees, checks the bottom agreement confirming your information and consenting to the Privacy Policy, personal data processing and an EDR credit check, and selects Signature Type 1. Review the website’s Terms and Conditions before enabling.</p>
+          <label class="checkbox-label"><input type="checkbox" id="signature-consent" role="switch"> Check both agreements &amp; choose the first signature</label>
+        </section>
+        <p class="helper">Uses your current Canvas application when you click Apply, Fill application form, or the button below. Save and Save &amp; Continue remain manual.</p>
+        <button type="button" id="prepare-signature" class="secondary-button" disabled>Check both agreements &amp; choose first signature</button><p id="signature-test-status" class="helper" role="status"></p>
+      </section>
       <p id="personal-error" class="form-error" role="alert" hidden></p>
       <footer class="profile-action-bar"><div><strong id="profile-save-status" role="status">All changes saved</strong><p>Fill a supported application open in another tab.</p></div><div class="profile-bottom-buttons"><button type="submit" class="secondary-button">Save personal information</button><button type="button" id="fill-application" class="primary-button">Fill application form</button></div></footer>
     </form>
     </section>
   </main>
-  <dialog id="apply-confirmation" aria-labelledby="apply-confirmation-title"><h2 id="apply-confirmation-title">Review application</h2><p class="helper">Confirm the applicant and apartment before automatic filling starts.</p><dl id="apply-confirmation-details" class="client-answer-list"></dl><p id="apply-confirmation-note" class="helper"></p><div class="editor-actions"><button id="cancel-apply" class="secondary-button">Cancel</button><button id="confirm-apply" class="primary-button">Confirm and apply</button></div></dialog>
+  <dialog id="apply-confirmation" aria-labelledby="apply-confirmation-title"><h2 id="apply-confirmation-title">Review application</h2><p class="helper">Confirm the applicant and apartment before automatic filling starts.</p><dl id="apply-confirmation-details" class="client-answer-list"></dl><p id="apply-confirmation-note" class="helper"></p><label class="checkbox-label"><input id="apply-create-account" type="checkbox" checked>Create an account if needed, using this profile’s details and password</label><p class="helper">Creating an account agrees to the website’s account Terms and Privacy Policy. Marketing subscriptions remain unchecked.</p><div class="editor-actions"><button id="cancel-apply" class="secondary-button">Cancel</button><button id="confirm-apply" class="primary-button">Confirm and apply</button></div></dialog>
   <dialog id="editor" aria-labelledby="editor-title">
     <form id="monitor-form">
       <div class="section-heading"><div><h2 id="editor-title">New monitor</h2></div><button type="button" id="close-editor" class="icon-button" aria-label="Close editor">×</button></div>

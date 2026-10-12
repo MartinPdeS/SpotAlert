@@ -1,7 +1,8 @@
 import {clientQuestionnaire, parseClientReply} from "./clients.js";
 import {ALARM_PREFIX, STORAGE_KEY, defaultMonitor, evaluateRule, sitePattern, siteError, errorKind, newListings, listingKey, safeListingUrl, samePage, inMonitoringHours, nextMonitoringTime, retrySeconds, SUPPORTED_SITES, validateSupportedMonitor, validateMonitor} from "./core.js";
 import {PROFILE_KEY, PROFILES_KEY, validateProfile, fillApplicationForm, selectMoveInDate, startCanvasApplication} from "./profile.js";
-import {applicationStep, captureApplicationStructure} from "./application.js";
+import {applicationStep, captureApplicationStructure, prepareCanvasSignature} from "./application.js";
+import {APPLICATION_BUILD} from "./application-diagnostics.js";
 import {inspectApplicationPage} from "./debug.js";
 import {EMAIL_KEY, sendEmailAlert} from "./email.js";
 import {playAlertSound} from "./alerts.js";
@@ -15,6 +16,29 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
   const fastTimers = new Map();
   const debugRuns = new Map();
   const applications = new Map();
+  async function currentCanvasApplication(monitorId) {
+        const isApplicant = tab => {
+          try {
+            const url = new URL(tab?.url);
+            return url.origin === 'https://canvas-world.securerc.co.uk' && /\/oleapplication\.aspx$/i.test(url.pathname) && url.searchParams.get('stepname')?.toLowerCase() === 'intapplicantinfo';
+          } catch { return false; }
+        };
+        const [active] = await api.tabs.query({active: true, currentWindow: true});
+        let tab = isApplicant(active) ? active : null;
+        const monitor = (await state()).monitors.find(item => item.id === monitorId);
+        if (!tab && monitor?.application?.tabId) {
+          try { tab = await api.tabs.get(monitor.application.tabId); } catch { /* Closed application: use the open page below. */ }
+        }
+        if (!tab) {
+          const candidates = (await api.tabs.query({currentWindow: true, url: 'https://canvas-world.securerc.co.uk/*'})).filter(isApplicant);
+          candidates.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+          if (candidates.length > 1 && (!candidates[0].lastAccessed || candidates[0].lastAccessed === candidates[1].lastAccessed)) throw new Error('Open the Canvas application you want to use, then return to SpotAlert and retry.');
+          tab = candidates[0];
+        }
+        if (!tab) throw new Error('Open your Canvas applicant information page, then return to SpotAlert and retry.');
+    return tab;
+  }
+
   const deliveryRetries = new Set();
   function clearFastTimer(id) {
     if (fastTimers.has(id)) timers.clearTimeout(fastTimers.get(id));
@@ -128,7 +152,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       value.debug ||= {enabled: false, captures: [], seen: {}};
       for (const capture of value.debug.captures || []) if (capture.status === "opening") { capture.status = "error"; capture.error = "Chrome restarted before capture completed."; }
       const previous = value.monitors || [];
-      for (const monitor of previous) if (monitor.application?.status === "running") Object.assign(monitor.application, {status: "stopped", kind: "interrupted", message: "Chrome restarted. Open the application tab and continue."});
+      for (const monitor of previous) if (monitor.application?.status === "running") Object.assign(monitor.application, {status: "stopped", kind: "interrupted", message: "The extension background worker restarted during this application. Open the application tab to check its progress.", updatedAt: now(), trace: [...(monitor.application.trace || []), {at: now(), event: "background-restarted"}].slice(-80)});
       value.alertPreferences ||= {notify: previous.length ? previous.some(m => m.notify) : true, sound: previous.some(m => m.sound)};
       value.alertPreferences.popup ??= value.alertPreferences.notify;
       value.alertPreferences.desktop ??= value.alertPreferences.notify;
@@ -457,7 +481,14 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     return open(id);
   }
   async function applicationStatus(id, update) {
-    await mutate(value => { const monitor = find(value, id); monitor.application = {...monitor.application, ...update, updatedAt: now()}; });
+    await mutate(value => {
+      const monitor = find(value, id);
+      const {diagnostic, ...details} = update;
+      const timestamp = now();
+      const trace = details.trace || monitor.application?.trace || [];
+      if (diagnostic) trace.push({at: timestamp, ...diagnostic});
+      monitor.application = {...monitor.application, ...details, trace: trace.slice(-80), updatedAt: timestamp};
+    });
   }
   async function stopApplication(id) {
     applications.get(id)?.controller.abort();
@@ -466,7 +497,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       await api.scripting.executeScript({target: {tabId}, func: () => { document.documentElement.dataset.spotalertApplicationStopped = "true"; }});
     } catch { /* A closed or navigating tab needs no further action. */ }
   }
-  async function runApplication(id, listing, existingTabId, signal, expectedProfileId) {
+  async function runApplication(id, listing, existingTabId, signal, expectedProfileId, createAccount = false, signatureOptions = {}) {
     const monitor = find(await state(), id);
     const origin = new URL(monitor.url).origin;
     const applicant = await assignedProfile(monitor);
@@ -475,7 +506,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     let tabId = existingTabId;
     let filled = 0;
     const done = async (message, kind = "review", details = {}) => {
-      await applicationStatus(id, {status: "stopped", kind, message, tabId, filled, missingFields: details.missingFields || [], structure: details.structure || null});
+      await applicationStatus(id, {status: "stopped", kind, message, tabId, filled, missingFields: details.missingFields || [], structure: details.structure || null, diagnostic: {event: "stopped", kind}});
       return {tabId, moveInMessage: message};
     };
     try {
@@ -489,11 +520,13 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
         if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
         await api.tabs.update(tabId, {url: initial});
       } else await api.tabs.update(tabId, {active: true});
-      await applicationStatus(id, {status: "running", message: "Opening the selected apartment…", tabId, filled, missingFields: [], structure: null});
+      await applicationStatus(id, {status: "running", build: APPLICATION_BUILD, trace: [], message: "Opening the selected apartment…", tabId, filled, missingFields: [], structure: null, diagnostic: {event: "started"}});
       const deadline = Date.now() + 120000;
       const dates = new Map();
+      const bookingAttempts = new Map();
       const acted = new Set();
       let previousAction = null, actionAt = 0;
+      let lastInspection = null;
       for (let attempt = 0; attempt < 160 && Date.now() < deadline; attempt++) {
         if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
         await waitForPage(tabId, signal, false);
@@ -502,16 +535,38 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
         if (url.origin !== origin) return done("The website opened another origin. Continue there manually.", "navigation");
         await api.scripting.executeScript({target: {tabId}, func: () => { delete document.documentElement.dataset.spotalertApplicationStopped; }});
         try {
-          const page = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: applicationStep}))[0]?.result;
+          const page = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: applicationStep, args: [false, createAccount]}))[0]?.result;
           if (!page) return done("Chrome could not inspect the application page.", "error");
+          const inspection = `${url.pathname}:${page.step}:${page.kind}`;
+          if (inspection !== lastInspection) {
+            await applicationStatus(id, {diagnostic: {event: "page-inspected", path: url.pathname, step: page.step, kind: page.kind}});
+            lastInspection = inspection;
+          }
           if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
           if (page.kind === "loading") { await new Promise(resolve => setTimeout(resolve, 250)); continue; }
-          if (page.kind === "verification") return done(page.message, page.kind, page);
+          if (["verification", "account-exists"].includes(page.kind)) return done(page.message, page.kind, page);
           const path = url.pathname.toLowerCase();
-          const key = page.key + (path.endsWith('termsandotheritems.aspx') ? ':' + url.searchParams.get('UnitID') : '');
+          if (path.endsWith('termsandotheritems.aspx') && page.kind === 'validation') return done(page.message, page.kind, page);
+          const key = path.endsWith('termsandotheritems.aspx') ? `${path}:${url.searchParams.get('UnitID')}:${url.searchParams.get('FloorPlanID')}` : page.key;
           if (previousAction === key) {
-            if (Date.now() - actionAt > 15000) return done("The website did not advance. Check the application tab for verification or an error, then continue.", "waiting");
+            if (["missing", "validation"].includes(page.kind)) return done(page.message, page.kind, page);
+            // CAPTCHA and booking requests can take time. Retry only after 15s
+            // on the same idle booking form, at most three clicks total.
+            if (path.endsWith('termsandotheritems.aspx') && Date.now() - actionAt > 15000 && (bookingAttempts.get(key) || 0) < 3) {
+              bookingAttempts.set(key, (bookingAttempts.get(key) || 0) + 1);
+              await applicationStatus(id, {message: "The booking page is idle and has not advanced. Retrying Start Application…", diagnostic: {event: "booking-retry", attempt: bookingAttempts.get(key)}});
+              actionAt = Date.now();
+              const retry = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: startCanvasApplication, args: [dates.get(key)]}))[0]?.result;
+              await applicationStatus(id, {diagnostic: {event: "booking-retry-result", started: !!retry?.started, ...(retry?.diagnostics || {})}});
+              if (!retry?.started) return done(retry?.message || "Start Application could not be retried. Check the booking tab.", "date");
+              actionAt = Date.now();
+              continue;
+            }
+            if (Date.now() - actionAt > 15000) return done("The website did not advance after the available attempts. Check the application tab for verification or an error.", "waiting");
             await new Promise(resolve => setTimeout(resolve, 250)); continue;
+          }
+          if (previousAction?.includes('termsandotheritems.aspx') && path.endsWith('oleapplication.aspx')) {
+            await applicationStatus(id, {diagnostic: {event: "booking-advanced", path: url.pathname, step: page.step}});
           }
           previousAction = null;
           if (path.endsWith('floorplans.aspx')) {
@@ -532,22 +587,35 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
               const date = (await api.scripting.executeScript({target: {tabId}, func: selectMoveInDate, args: [profile]}))[0]?.result;
               if (!date?.moveInDate) return done(date?.moveInMessage || "Choose a move-in date on the website.", "date");
               dates.set(key, date.moveInDate);
-              await applicationStatus(id, {message: date.moveInMessage, moveInDate: date.moveInDate, moveInMessage: date.moveInMessage});
+              await applicationStatus(id, {message: date.moveInMessage, moveInDate: date.moveInDate, moveInMessage: date.moveInMessage, diagnostic: {event: "date-selected", date: date.moveInDate}});
               await new Promise(resolve => setTimeout(resolve, 1000));
               continue;
             }
+            // Remember the attempt before execution: successful navigation can
+            // destroy the injected context before Chrome returns its result.
+            previousAction = key; actionAt = Date.now();
+            bookingAttempts.set(key, 1);
             const next = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: startCanvasApplication, args: [dates.get(key)]}))[0]?.result;
+            await applicationStatus(id, {diagnostic: {event: "booking-click-result", started: !!next?.started, ...(next?.diagnostics || {})}});
             if (!next?.started) return done(next?.message || "Check the booking page before continuing.", "date");
+            bookingAttempts.set(key, 1);
             previousAction = key; actionAt = Date.now();
             await applicationStatus(id, {message: "Starting the application…"});
           } else if (path.endsWith('oleapplication.aspx')) {
             if (acted.has(key)) return done("This step has already been continued. Review the website before trying again.", "waiting");
+            if (signatureOptions.enabled && url.hostname === 'canvas-world.securerc.co.uk' && page.step === 'intapplicantinfo') {
+              const details = (await api.scripting.executeScript({target: {tabId}, world: 'MAIN', func: fillApplicationForm, args: [profile]}))[0]?.result;
+              filled += details?.count || 0;
+              const prepared = (await api.scripting.executeScript({target: {tabId}, world: 'MAIN', func: prepareCanvasSignature, args: [signatureOptions.screening === true]}))[0]?.result;
+              if (prepared?.error || !prepared?.signatureSelected || !prepared?.agreementChecked || (signatureOptions.screening && !prepared?.screeningChecked)) return done(prepared?.error || 'The website did not confirm the selected agreement and signature options.', 'signature');
+              return done(prepared.message, 'signature');
+            }
             if (["documents", "review", "login", "unfamiliar"].includes(page.kind)) return done(page.message, page.kind, page);
-            const result = (await api.scripting.executeScript({target: {tabId}, func: fillApplicationForm, args: [profile]}))[0]?.result;
+            const result = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: fillApplicationForm, args: [profile]}))[0]?.result;
             filled += result?.count || 0;
             await applicationStatus(id, {filled, message: `Filled ${filled} fields from Personal information…`});
             // Reinspect after field changes; never advance based on stale validation.
-            const next = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: applicationStep, args: [true]}))[0]?.result;
+            const next = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: applicationStep, args: [true, createAccount]}))[0]?.result;
             if (next?.kind === "loading") { await new Promise(resolve => setTimeout(resolve, 250)); continue; }
             if (!next?.advanced) return done(next?.message || "Details filled. Review this step on the website.", next?.kind, next || {});
             acted.add(key); previousAction = key; actionAt = Date.now();
@@ -555,6 +623,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
           } else return done("This page needs your review before continuing. Download its field structure to help add support.", "unfamiliar", {structure: (await api.scripting.executeScript({target: {tabId}, func: captureApplicationStructure}))[0]?.result});
         } catch (error) {
           if (!/frame|context|document|navigation|removed/i.test(error.message)) throw error;
+          await applicationStatus(id, {diagnostic: {event: "navigation-interrupted-script"}});
           await new Promise(resolve => setTimeout(resolve, 250));
         }
       }
@@ -563,7 +632,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       return done(signal.aborted ? "Application automation stopped." : error.message, signal.aborted ? "cancelled" : "error");
     }
   }
-  async function openListing(id, listingId, resume = false, expectedProfileId = null) {
+  async function openListing(id, listingId, resume = false, expectedProfileId = null, createAccount = false, signatureOptions = {}) {
     if (applications.has(id)) return applications.get(id).promise;
     const monitor = find(await state(), id);
     const listing = [...(monitor.alert?.listings || []), ...monitor.samples].find(sample => listingKey(sample) === (resume ? monitor.application?.listingId : listingId));
@@ -574,7 +643,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     applications.set(id, run);
     run.promise = (async () => {
       await applicationStatus(id, {listingId: resume ? monitor.application.listingId : listingKey(listing)});
-      return runApplication(id, listing || {}, resume ? monitor.application.tabId : null, controller.signal, expectedProfileId);
+      return runApplication(id, listing || {}, resume ? monitor.application.tabId : null, controller.signal, expectedProfileId, createAccount, signatureOptions);
     })().finally(() => applications.delete(id));
     return run.promise;
   }
@@ -796,13 +865,26 @@ ${link}`;
         await saveLibrary(library);
         return {cleared: true};
       }
+      case "prepare-canvas-signature": {
+        if (message.consent !== true) throw new Error('Explicitly choose the agreement and signature action first.');
+        const tab = await currentCanvasApplication(message.monitorId);
+        const url = new URL(tab.url);
+        if (url.origin !== 'https://canvas-world.securerc.co.uk' || !/\/oleapplication\.aspx$/i.test(url.pathname) || url.searchParams.get('stepname')?.toLowerCase() !== 'intapplicantinfo') throw new Error('The selected tab is no longer the Canvas applicant information page.');
+        const results = await api.scripting.executeScript({target: {tabId: tab.id}, world: 'MAIN', func: prepareCanvasSignature, args: [message.screening === true]});
+        const result = results[0]?.result;
+        if (result?.error) throw new Error(result.error);
+        if (!result?.agreementChecked || !result?.signatureSelected) throw new Error('The website did not confirm both selections. Review the application tab.');
+        if (message.screening === true && !result.screeningChecked) throw new Error('The website did not confirm the screening agreement.');
+        return result;
+      }
       case "fill-application": {
         await profileLibrary();
     const profile = validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
         if (!Object.values(profile).some(Boolean)) throw new Error("Save your personal information first.");
-        const [tab] = await api.tabs.query({active: true, currentWindow: true});
+        const [activeTab] = await api.tabs.query({active: true, currentWindow: true});
+        const tab = message.canvasSignature === true ? await currentCanvasApplication(message.monitorId) : activeTab;
         if (!tab?.url || !SUPPORTED_SITES.some(site => new URL(site.url).origin === new URL(tab.url).origin)) throw new Error("Open a supported housing application form in the active tab, then use SpotAlert’s side panel to fill it.");
-        const results = await api.scripting.executeScript({target: {tabId: tab.id}, func: fillApplicationForm, args: [profile]});
+        const results = await api.scripting.executeScript({target: {tabId: tab.id}, world: "MAIN", func: fillApplicationForm, args: [profile]});
         const result = results[0]?.result || {count: 0, fields: []};
         if (profile.moveInFrom) {
           const dates = await api.scripting.executeScript({target: {tabId: tab.id}, func: selectMoveInDate, args: [profile]});
@@ -862,7 +944,7 @@ ${link}`;
       case "open": return {tabId: await open(message.id)};
       case "open-affected": return {tabId: await openAffected(message.id)};
       case "open-listing": {
-        const result = await openListing(message.id, message.listingId, false, message.profileId);
+        const result = await openListing(message.id, message.listingId, false, message.profileId, message.createAccount === true, {enabled: message.signatureConsent === true, screening: message.screening === true});
         return typeof result === "number" ? {tabId: result} : result;
       }
       case "continue-application": return openListing(message.id, null, true);

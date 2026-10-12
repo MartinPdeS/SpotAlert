@@ -129,7 +129,7 @@ def main():
             expect(panel.locator('#profile-name')).to_have_value('Jamie client')
             expect(panel.locator('#personal-firstName')).to_have_value('Jamie')
             expect(panel.locator('#personal-registrationPassword')).to_have_value('ClientExisting123!')
-            panel.get_by_role('tab', name='Clients', exact=True).click()
+            panel.get_by_role('tab', name='Personal information', exact=True).click()
             expect(panel.locator('#client-overview-list')).to_contain_text('Jamie client')
             expect(panel.locator('#client-overview-list')).to_contain_text('Missing details')
             panel.screenshot(path=str(ROOT/'artifacts/extension/client-readiness-overview.png'), full_page=True)

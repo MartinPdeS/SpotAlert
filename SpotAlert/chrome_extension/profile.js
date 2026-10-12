@@ -2,7 +2,7 @@ export const PROFILES_KEY = "spotalert.application-profiles.v1";
 export const PROFILE_KEY = "spotalert.application-profile.v1";
 const yesNo = ["Yes", "No"];
 export const PROFILE_SECTIONS = [
-  {title: "Account password", helper: "Saved separately for this applicant and used when filling supported registration forms. You can also save an existing account password here; account creation remains manual.", fields: [["registrationPassword", "Password", "password"]]},
+  {title: "Account password", helper: "Saved separately for this applicant and used when filling supported registration forms. You can also save an existing account password here; Apply can create an account when you enable it in the application confirmation.", fields: [["registrationPassword", "Password", "password"]]},
   {title: "Identity & contact", fields: [
     ["title", "Title", ["Mr.", "Ms.", "Mrs.", "Dr."]], ["firstName", "First name"], ["middleName", "Middle name"], ["noMiddleName", "I have no middle name", yesNo], ["lastName", "Last name"], ["dateOfBirth", "Date of birth", "date"], ["nationality", "Nationality"], ["countryOfResidence", "Country of residence"], ["email", "Email", "email"], ["phone", "Phone", "tel"], ["preferredName", "Preferred name"], ["contactMethod", "Preferred contact method", ["Call", "Text", "Email"]],
   ]},
@@ -77,21 +77,32 @@ export function selectMoveInDate(profile) {
   while (date <= maximum && excludedDays.includes(date.getDay())) date.setDate(date.getDate() + 1);
   if (date > maximum) return {count: 0, moveInMessage: 'No weekday move-in date fits your preference within the website’s available date range.'};
   const value = `${String(date.getDate()).padStart(2, '0')}-${String(date.getMonth() + 1).padStart(2, '0')}-${date.getFullYear()}`;
-  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
-  input.dispatchEvent(new Event('input', {bubbles: true}));
-  // Let Chrome return the selected date before RentCafe's change handler navigates.
-  setTimeout(() => input.dispatchEvent(new Event('change', {bubbles: true})), 0);
+  if (parse(input.value).getTime() !== date.getTime()) {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    // Let Chrome return the selected date before RentCafe's change handler navigates.
+    setTimeout(() => input.dispatchEvent(new Event('change', {bubbles: true})), 0);
+  }
   const adjusted = date.getTime() !== start.getTime();
   const reason = start < minimum ? 'The website opens move-ins later than your preferred date.' : [0, 6].includes(start.getDay()) ? 'Your preferred date falls on a weekend.' : adjusted ? 'The website blocks the preferred weekday.' : 'Your preferred date is allowed.';
   return {count: 1, moveInDate: value, moveInMessage: `Selected earliest allowed weekday: ${value}. ${profile.moveInFrom ? reason : 'No preference saved; using the first available weekday.'}`, moveInReason: reason};
 }
 
 /** Advance only after Apply has selected an allowed move-in date. */
-export async function startCanvasApplication(expectedDate, waitMs = 12000) {
+export async function startCanvasApplication(expectedDate, waitMs = 20000) {
   const [day, month, year] = String(expectedDate || '').split('-').map(Number);
   const selectedDate = new Date(year, month - 1, day);
-  if (!Number.isFinite(selectedDate.getTime()) || [0, 6].includes(selectedDate.getDay())) return {started: false, message: 'Choose a weekday move-in date before starting the application.'};
+  if (!Number.isFinite(selectedDate.getTime()) || selectedDate.getDate() !== day || selectedDate.getMonth() + 1 !== month || selectedDate.getFullYear() !== year || [0, 6].includes(selectedDate.getDay())) return {started: false, message: 'Choose a weekday move-in date before starting the application.'};
   const end = Date.now() + waitMs;
+  const sameDate = value => {
+    const parts = String(value || '').trim().match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+    return parts && Number(parts[1]) === day && Number(parts[2]) === month && Number(parts[3]) === year;
+  };
+  let lastButton = null, stableSince = 0;
+  let sawDifferentDate = false;
+  let ajaxWaits = 0, dateWaits = 0, buttonWaits = 0;
+  let dateMatches = false, visibleButtons = 0, enabledButtons = 0;
+  const diagnostics = () => ({ajaxWaits, dateWaits, buttonWaits, dateMatches, visibleButtons, enabledButtons});
   // Give the date-change handler time to update the lease summary.
   await new Promise(resolve => setTimeout(resolve, 750));
   do {
@@ -100,20 +111,40 @@ export async function startCanvasApplication(expectedDate, waitMs = 12000) {
     // This function runs in MAIN so it can observe that request and handler setup.
     const jq = globalThis.jQuery;
     if (jq?.active > 0) {
+      ajaxWaits++;
+      lastButton = null;
       await new Promise(resolve => setTimeout(resolve, 250));
       continue;
     }
     const input = document.querySelector('#sMoveInDate');
-    if (input?.value !== expectedDate) return {started: false, message: 'The website changed the move-in date. Review the booking page before continuing.'};
-    const button = [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a')].find(item => /^start application$/i.test((item.innerText || item.value || item.textContent || '').trim()));
-    const bound = !jq?._data || (button && jq._data(button, 'events')?.click?.length > 0);
-    if (button && bound && !button.disabled && button.getAttribute('aria-disabled') !== 'true' && button.getClientRects().length) {
-      button.click();
-      return {started: true, message: `Move-in date selected: ${expectedDate}. Start Application clicked.`};
+    dateMatches = !!input && !!sameDate(input.value);
+    if (!input || !sameDate(input.value)) {
+      dateWaits++;
+      sawDifferentDate = !!input;
+      lastButton = null;
+      await new Promise(resolve => setTimeout(resolve, 250));
+      continue;
     }
+    const candidates = [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a')].filter(item => /^start application$/i.test((item.innerText || item.value || item.textContent || '').replace(/\s+/g, ' ').trim()) && item.getClientRects().length);
+    visibleButtons = candidates.length;
+    const enabled = candidates.filter(item => !item.disabled && item.getAttribute('aria-disabled') !== 'true' && !item.matches?.(':disabled'));
+    enabledButtons = enabled.length;
+    const button = enabled[0];
+    // Direct, delegated and native handlers are all valid. Wait for a stable
+    // enabled control after AJAX instead of requiring private jQuery event data.
+    if (button !== lastButton) { lastButton = button; stableSince = Date.now(); }
+    if (button && (Date.now() - stableSince >= 500 || waitMs === 0)) {
+      // Validate with the website before clicking; this can disable or replace controls.
+      const form = input.closest?.('form');
+      if (form && jq?.fn?.valid && jq(form).valid() === false) return {started: false, diagnostics: diagnostics(), message: 'The booking form has validation errors. Correct them on the website before starting the application.'};
+      if (button.isConnected === false || button.disabled || !button.getClientRects().length || !sameDate(document.querySelector('#sMoveInDate')?.value) || jq?.active > 0) { lastButton = null; continue; }
+      button.click();
+      return {started: true, diagnostics: diagnostics(), message: `Move-in date selected: ${expectedDate}. Start Application clicked; waiting for the website to advance.`};
+    }
+    buttonWaits++;
     await new Promise(resolve => setTimeout(resolve, 250));
   } while (Date.now() < end);
-  return {started: false, message: 'The move-in date is selected, but Start Application is unavailable. Check the booking tab.'};
+  return {started: false, diagnostics: diagnostics(), message: sawDifferentDate ? 'The website did not keep the selected move-in date. Review the booking page.' : 'The booking form did not finish preparing Start Application. Check the booking tab for a validation or verification prompt.'};
 }
 
 /** Fill known fields after Apply or Fill application form. Never submits. */
@@ -172,7 +203,9 @@ export function fillApplicationForm(profile) {
       input.click();
     } else {
       // The applicant's birth date is repeated by RentCafe; keep every copy in sync.
-      if (input.value?.trim() && field !== "dateOfBirth") continue;
+      const phoneWidget = /phone|mobile/i.test(field || '') ? globalThis.intlTelInputGlobals?.getInstance?.(input) : null;
+      const repairPhone = phoneWidget && (input.classList.contains('error') || input.getAttribute('aria-invalid') === 'true');
+      if (input.value?.trim() && field !== "dateOfBirth" && !repairPhone) continue;
       if (input.tagName === "SELECT") {
         const option = [...input.options].find(option => !option.disabled && (normalize(option.textContent) === normalize(value) || normalize(option.value) === normalize(value)));
         if (!option) continue;
@@ -182,9 +215,14 @@ export function fillApplicationForm(profile) {
         if (dateFields.has(field) && input.type !== "date") { const [year, month, day] = value.split('-'); value = `${day}-${month}-${year}`; }
       }
       const prototype = input.tagName === "SELECT" ? HTMLSelectElement.prototype : input.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      Object.getOwnPropertyDescriptor(prototype, "value").set.call(input, value);
+      if (phoneWidget) phoneWidget.setNumber(String(value).trim());
+      else Object.getOwnPropertyDescriptor(prototype, "value").set.call(input, value);
       input.dispatchEvent(new Event("input", {bubbles: true}));
       input.dispatchEvent(new Event("change", {bubbles: true}));
+      if (phoneWidget) {
+        input.dispatchEvent(new Event("blur", {bubbles: true}));
+        if (globalThis.jQuery?.fn?.valid) globalThis.jQuery(input).valid();
+      }
     }
     filled.add(field);
     count++;

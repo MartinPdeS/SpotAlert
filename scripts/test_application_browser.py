@@ -29,9 +29,35 @@ def main():
                     body = '''<input type="button" value="Book now" onclick="ApplyNowClick('10','101','1','17-10-2026','termsandotheritems.aspx')"><script>function ApplyNowClick(){location.href='termsandotheritems.aspx?UnitID=10&FloorPlanID=101'}</script>'''
                 elif 'termsandotheritems.aspx' in url:
                     step = 'Registration' if host.startswith('southeast-') else 'intapplicantinfo'
-                    body = f'''<input id="sMoveInDate" value="17-10-2026"><script type="text/plain">$('#sMoveInDate').datepicker({{minDate:'17-10-2026',maxDate:'30-10-2026'}});var excludedDays=[0,6];</script><button onclick="location.href='oleapplication.aspx?stepname={step}'">Start Application</button>'''
+                    body = """<script type="text/plain">$('#sMoveInDate').datepicker({minDate:'17-10-2026',maxDate:'30-10-2026'});var excludedDays=[0,6];</script>
+                    <div id="lease"><input id="sMoveInDate" value="17-10-2026"><input id="oldLeaseField"><button>Start Application</button></div>
+                    <script>
+                    window.jQuery={active:0,_data:()=>({})};
+                    document.addEventListener('change',event=>{if(event.target.id!=='sMoveInDate')return;
+                      const selected=event.target.value.split('-').map(Number).join('-');
+                      sessionStorage.setItem('dateChanges',String(Number(sessionStorage.getItem('dateChanges')||0)+1));
+                      jQuery.active=1;document.querySelector('#lease').innerHTML='<p>Updating lease...</p>';
+                      setTimeout(()=>{document.querySelector('#lease').innerHTML='<input id="sMoveInDate" value="'+selected+'"><input id="newLeaseField"><button style="display:none">Start Application</button><button data-start="yes">Start Application</button>';jQuery.active=0;},1500);
+                    });
+                    document.addEventListener('click',event=>{if(event.target.dataset.start!=='yes')return;
+                      const clicks=Number(sessionStorage.getItem('startClicks')||0)+1;sessionStorage.setItem('startClicks',String(clicks));
+                      if(location.hostname.startsWith('canvas')&&clicks===1)return;
+                      location.href='oleapplication.aspx?stepname=NEXTSTEP';});
+                    </script>""".replace('NEXTSTEP', step)
                 elif 'stepname=Registration' in url:
-                    body = ''.join(f'<input id="{field}" class="required">' for field in ['txtName', 'txtName2', 'txtEmail', 'txtPhone', 'BirthDate']) + '<input id="txtPassword" type="password"><button onclick="document.body.dataset.created=1">Create my account</button>'
+                    body = ''.join(f'<input id="{field}" class="required">' for field in ['txtName', 'txtName2', 'txtEmail', 'txtPhone', 'BirthDate']) + """<input id="txtPassword" type="password"><label><input id="SubscribeToEmails" type="checkbox">Receive news under our privacy policy</label><div class="g-recaptcha" data-size="invisible"><div class="grecaptcha-badge"><iframe title="reCAPTCHA" style="width:256px;height:80px"></iframe></div></div><button onclick="sessionStorage.setItem('accountCreated','1');location.href='oleapplication.aspx?stepname=intapplicantinfo'">Create my account</button>"""
+                    body += """<script>
+                      const phone=document.querySelector('#txtPhone');
+                      phone.addEventListener('input',()=>{phone.value=phone.value.replace(/[^0-9]/g,'');});
+                      window.intlTelInputGlobals={getInstance:input=>input===phone?{setNumber:value=>{
+                        sessionStorage.setItem('phoneWidgetSet','1');phone.value=value.replace(/^\\+31/,'0');
+                      }}:null};
+                      window.jQuery=field=>({valid:()=>{
+                        const valid=field!==phone||/^0[1-9][0-9]{8}$/.test(phone.value);
+                        field.classList.toggle('error',!valid);return valid;
+                      }});
+                      jQuery.fn={valid:()=>true};
+                    </script>"""
                 elif 'stepname=intapplicantinfo' in url:
                     body = '<input id="ProspectFirstName" required><input id="ProspectLastName" required>'
                     if host.startswith('canvas'):
@@ -60,8 +86,22 @@ def main():
                     expect(panel.locator('#apply-confirmation-details')).to_contain_text('Sam client' if site['id'].startswith('ourdomain-amsterdam-diemen') else 'Alex')
                     panel.get_by_role('button', name='Confirm and apply', exact=True).click()
                 destination = opened.value
-                panel.wait_for_function("async id=>(await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors.find(m=>m.id===id).application?.status==='stopped'", arg=site['id'], timeout=45000)
+                for _ in range(450):
+                    application = worker.evaluate("async id=>(await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors.find(m=>m.id===id).application", site['id'])
+                    if application and application.get('status') == 'stopped':
+                        break
+                    panel.wait_for_timeout(100)
+                else:
+                    raise AssertionError('Application did not finish within 45 seconds')
                 expect(panel.get_by_role('button', name='Continue application', exact=True)).to_have_count(0)
+                assert destination.evaluate("sessionStorage.getItem('dateChanges')") == '1', application
+                assert destination.evaluate("sessionStorage.getItem('startClicks')") == ('2' if site['id'].startswith('canvas') else '1'), application
+                assert application['build'] == '2026.10.12.3', application
+                assert any(event['event'] == 'booking-click-result' and event['started'] and event['dateMatches'] for event in application['trace']), application
+                assert application['trace'][-1]['event'] == 'stopped', application
+                expect(panel.locator('.application-diagnostics')).to_have_count(1)
+                if site['id'].startswith('canvas'):
+                    assert any(event['event'] == 'booking-retry-result' and event['started'] for event in application['trace']), application
                 if site['id'].startswith('ourdomain-amsterdam-diemen'):
                     expect(destination).to_have_url(__import__('re').compile('ApplicationCharges'))
                     expect(panel.locator('.move-in-feedback')).to_contain_text('19-10-2026')
@@ -69,10 +109,10 @@ def main():
                     assert destination.locator('body').get_attribute('data-paid') is None
                     expect(panel.locator('.application-progress')).to_have_count(0)
                 elif site['id'].startswith('ourdomain-amsterdam-south-east'):
-                    expect(destination.locator('#txtName')).to_have_value('Alex')
-                    expect(destination.locator('#BirthDate')).to_have_value('04-03-1995')
-                    expect(destination.locator('#txtPassword')).to_have_value('TestPassword123!')
-                    assert destination.locator('body').get_attribute('data-created') is None
+                    assert destination.evaluate("sessionStorage.getItem('phoneWidgetSet')") == '1', application
+                    assert destination.evaluate("sessionStorage.getItem('accountCreated')") == '1'
+                    expect(destination).to_have_url(__import__('re').compile('ApplicationCharges'))
+                    assert destination.locator('body').get_attribute('data-paid') is None
                     expect(panel.locator('.application-progress')).to_have_count(0)
                 else:
                     expect(destination.locator('#ProspectFirstName')).to_have_value('Alex')
@@ -110,6 +150,8 @@ def main():
             probe.goto(sites[0]['url'].replace('floorplans.aspx','oleapplication.aspx?stepname=intapplicantinfo'))
             inspect = (ROOT / 'SpotAlert/chrome_extension/application.js').read_text().replace('export function ', 'function ')
             cases = [
+                ('signature', '<input type="checkbox" id="chkAgreement"><div id="scriptSig"><input type="radio" id="signatureOption2"></div><button onclick="document.body.dataset.advanced=1">Next</button>'),
+                ('signature', '<input type="checkbox" id="chkAgreement" checked><div id="scriptSig"><input type="radio" id="signatureOption11" checked></div><button onclick="document.body.dataset.advanced=1">Next</button>'),
                 ('agreement', '<label><input type="checkbox" id="chkAgreement">Agree to terms</label><button onclick="document.body.dataset.advanced=1">Next</button>'),
                 ('verification', '<h1>Verify you are human</h1><button onclick="document.body.dataset.advanced=1">Next</button>'),
                 ('missing', '<label>Email<input required type="email" value="invalid"></label><button onclick="document.body.dataset.advanced=1">Next</button>'),
@@ -121,6 +163,18 @@ def main():
                 result = probe.evaluate('(()=>{' + inspect + ';return applicationStep(true);})()')
                 assert result['kind'] == kind, result
                 assert probe.locator('body').get_attribute('data-advanced') is None
+            probe.goto(sites[0]['url'].replace('floorplans.aspx','oleapplication.aspx?stepname=Registration'))
+            probe.set_content('<p>Email already registered</p><button onclick="document.body.dataset.created=1">Create my account</button>')
+            result = probe.evaluate('(()=>{' + inspect + ';return applicationStep(true,true);})()')
+            assert result['kind'] == 'account-exists'
+            assert probe.locator('body').get_attribute('data-created') is None
+            probe.set_content('<div class="g-recaptcha"><iframe title="reCAPTCHA" style="width:304px;height:78px"></iframe></div><button>Create my account</button>')
+            result = probe.evaluate('(()=>{' + inspect + ';return applicationStep(true,true);})()')
+            assert result['kind'] == 'verification'
+            probe.set_content('<p>Already have an account? Log in.</p><input id="txtEmail" value="alex@example.com"><input id="txtPassword" type="password"><button onclick="document.body.dataset.created=1">Create my account</button>')
+            result = probe.evaluate('(()=>{' + inspect + ';return applicationStep(true,true);})()')
+            assert result['kind'] == 'missing'
+            assert probe.locator('body').get_attribute('data-created') is None
             probe.goto(sites[0]['url'].replace('floorplans.aspx','oleapplication.aspx?stepname=newstep&token=private-token'))
             probe.set_content('<label for="custom">Custom question</label><input id="custom" required value="private-answer"><button>Continue</button>')
             result = probe.evaluate('(()=>{' + inspect + ';return applicationStep(true);})()')

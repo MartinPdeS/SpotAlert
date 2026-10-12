@@ -1093,3 +1093,22 @@ test('notification delivery history retries only the failed channel', async () =
     await assert.rejects(engine.dispatch({type:'retry-delivery',deliveryId:failed.id}), /Only failed/);
   } finally {globalThis.fetch=original;}
 });
+
+test('Start Application handles delegated handlers, hidden duplicates and unpadded dates', async () => {
+  const {startCanvasApplication} = await import('../SpotAlert/chrome_extension/profile.js');
+  let clicks=0;
+  const hidden={innerText:'Start Application',disabled:false,getAttribute:()=>null,getClientRects:()=>[],click:()=>{throw new Error('hidden button clicked');}};
+  const button={...hidden,getClientRects:()=>[1],click:()=>clicks++};
+  const context={document:{querySelector:()=>({value:'2-11-2026'}),querySelectorAll:()=>[hidden,button]},jQuery:{active:0,_data:()=>({})},Date,setTimeout:callback=>callback()};
+  const result=await vm.runInNewContext(`(${startCanvasApplication.toString()})('02-11-2026',0)`,context);
+  assert.equal(result.started,true);assert.equal(clicks,1);
+});
+
+test('application debug reports exclude profile values, passwords and URL queries', async () => {
+  const {applicationReport, APPLICATION_BUILD} = await import('../SpotAlert/chrome_extension/application-diagnostics.js');
+  const report = applicationReport({build:APPLICATION_BUILD,status:'stopped',kind:'waiting',profile:{email:'private@example.com'},password:'secret-password',message:'private content',trace:[{at:123,event:'page-inspected',path:'/termsandotheritems.aspx?token=secret-token',step:'',kind:'ready',password:'secret-password',pageContent:'private content'}]});
+  const encoded=JSON.stringify(report);
+  assert.equal(report.build,APPLICATION_BUILD);
+  assert.equal(report.trace[0].path,'/termsandotheritems.aspx');
+  assert.ok(!/secret|private/.test(encoded));
+});

@@ -1,4 +1,5 @@
 import {clientQuestionnaire, parseClientReply, CLIENT_FIELDS} from "./clients.js";
+import {APPLICATION_BUILD, applicationReport} from "./application-diagnostics.js";
 import {STORAGE_KEY, availabilityArrivals, siteError, listingKey, safeListingUrl, sitePattern, validateMonitor} from "./core.js";
 
 import {UI_KEY, freshness, availabilityTotals} from "./ui.js";
@@ -168,6 +169,7 @@ function actionButton(label, type, monitor, className = "secondary-button") {
 function renderDetail() {
   const monitor = selected();
   const root = $("#detail");
+  const diagnosticsOpen = root.querySelector('.application-diagnostics')?.open;
   const focusedAction = root.contains(document.activeElement) ? document.activeElement.dataset.action : null;
   root.replaceChildren();
   if (!monitor) {
@@ -203,7 +205,27 @@ function renderDetail() {
   const applicant = applicantLibrary.profiles.find(item => item.id === (monitor.profileId || applicantLibrary.activeId));
   const preferences = applicant?.details || {};
   root.append(element("div", {class: "location-applicant"}, element("label", {}, "Applicant for this location", profileSelect), element("p", {class: "helper"}, `${applicant?.name || "Choose an applicant"} · ${preferences.maxRent ? `up to €${preferences.maxRent}/month` : "Any budget"} · ${preferences.minSize ? `at least ${preferences.minSize} m²` : "Any size"} · ${preferences.moveInFrom ? `move in from ${preferences.moveInFrom}` : "Earliest weekday move-in"}`)));
-  if (monitor.application?.moveInMessage) root.append(element("p", {class: "move-in-feedback", role: "status"}, monitor.application.moveInMessage));
+  if (monitor.application?.message) {
+    const app = monitor.application;
+    const failed = app.status === "stopped" && ["date", "waiting", "error", "interrupted"].includes(app.kind);
+    root.append(element("p", {class: `move-in-feedback${failed ? " form-error" : ""}`, role: "status"}, app.message, app.moveInDate && !app.message.includes(app.moveInDate) ? ` Move-in date: ${app.moveInDate}.` : ""));
+    const details = element("details", {class: "application-diagnostics", "data-application-build": APPLICATION_BUILD}, element("summary", {}, "Application diagnostics"));
+    details.open = !!diagnosticsOpen;
+    const report = applicationReport(app);
+    details.append(element("p", {class: "helper"}, `Dashboard build ${APPLICATION_BUILD} · Run build ${report.build} · ${report.status}${report.kind ? ` (${report.kind})` : ""}`));
+    if (app.build !== APPLICATION_BUILD) details.append(element("p", {class: "form-error"}, "This run used an older build. Reload SpotAlert at chrome://extensions, reopen the dashboard, and try Apply again."));
+    const list = element("ol", {class: "application-trace"});
+    for (const item of report.trace) {
+      const {at, event, ...metadata} = item;
+      list.append(element("li", {}, `${clock(at)} · ${event.replaceAll("-", " ")}`, Object.keys(metadata).length ? element("code", {}, JSON.stringify(metadata)) : ""));
+    }
+    details.append(list, element("div", {class: "control-row"}, element("button", {type: "button", class: "secondary-button", onclick: guard(() => request({type: "open-application-tab", id: monitor.id}))}, "Open application tab ↗"), element("button", {type: "button", class: "secondary-button", onclick: () => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], {type: "application/json"}));
+      element("a", {href: url, download: "spotalert-application-debug.json"}).click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }}, "Download debug report")));
+    root.append(details);
+  }
 
   const attention = monitor.error ? element("section", {class: "attention-card", "aria-label": "Monitoring status"}) : null;
   if (attention) {
@@ -293,7 +315,7 @@ function renderDetail() {
       element("div", {class: "sample-top"}, element("h4", {class: "sample-name"}, sample.name || "Floor plan description unavailable"), element("span", {class: `pill${sample.matched ? " available" : ""}`}, sample.included === false ? "Filtered out" : sample.matched ? "Available" : "Not available")),
       element("p", {class: "sample-type"}, {studio: "Studio", "1-bedroom": "1 bedroom", "2-bedroom": "2 bedrooms", "3-plus": "3+ bedrooms"}[sample.apartmentType] || ""),
       details.length ? element("dl", {class: "listing-details"}, ...details.map(([label, value]) => element("div", {}, element("dt", {}, label), element("dd", {}, value)))) : element("p", {class: "sample-context"}, "Check again to load apartment details."),
-      sample.preferenceReasons?.length && element("p", {class: "sample-context"}, sample.preferenceReasons.join(" · ")),
+      Boolean(sample.preferenceReasons?.length) && element("p", {class: "sample-context"}, sample.preferenceReasons.join(" · ")),
       sample.matched && listingButton(monitor, sample));
   })));
   root.append(sampleSection);
@@ -531,7 +553,7 @@ $("#new-profile").addEventListener("click", guard(async () => {
   await loadState();
   $("#profile-name").focus(); $("#profile-name").select();
 }));
-$("#personal-form").addEventListener("input", event => { if (event.target.id !== "saved-profile") personalDirty = true; updateProfilePresentation(); });
+$("#personal-form").addEventListener("input", event => { if (!["saved-profile", "signature-consent"].includes(event.target.id)) personalDirty = true; updateProfilePresentation(); });
 $("#generate-registration-details").addEventListener("click", () => {
   const details = temporaryRegistrationDetails();
   for (const [key, value] of Object.entries(details)) {
@@ -569,10 +591,39 @@ $("#fill-application").addEventListener("click", guard(async () => {
   const button = $("#fill-application");
   button.disabled = true;
   try {
-    const result = await request({type: "fill-application"});
+    const result = await request({type: "fill-application", canvasSignature: $("#signature-consent").checked, monitorId: selectedId});
+    if ($("#signature-consent").checked) {
+      await runSignatureTest();
+      return;
+    }
     toast(result.moveInMessage || (result.count ? `Filled ${result.count} ${result.count === 1 ? "field" : "fields"}. Review the form before submitting.` : "No empty matching fields found. Open the application form and try again."));
   } finally { button.disabled = false; }
 }));
+
+function updateSignatureAction() {
+  $("#prepare-signature").disabled = !$("#signature-consent").checked;
+}
+$("#signature-consent").addEventListener("change", updateSignatureAction);
+async function runSignatureTest() {
+  if (!$("#signature-consent").checked) return;
+  const screening = true;
+  $("#signature-consent").checked = false;
+  updateSignatureAction();
+  $("#signature-consent").disabled = true;
+  $("#signature-test-status").textContent = "Selecting agreement and first signature…";
+  try {
+    const result = await request({type: "prepare-canvas-signature", monitorId: selectedId, consent: true, screening});
+    $("#signature-test-status").textContent = result.message;
+    toast(result.message);
+  } catch (error) {
+    $("#signature-test-status").textContent = error.message;
+    throw error;
+  } finally {
+    $("#signature-consent").disabled = false;
+    updateSignatureAction();
+  }
+}
+$("#prepare-signature").addEventListener("click", guard(runSignatureTest));
 
 $("#stop-all").addEventListener("click", guard(async () => {
   $("#stop-all").disabled = true;
@@ -781,7 +832,12 @@ function showApplyConfirmation(monitor, sample) {
 $("#cancel-apply").addEventListener("click", () => $("#apply-confirmation").close());
 $("#confirm-apply").addEventListener("click", guard(async () => {
   if (!pendingApplication) return;
-  const command = pendingApplication;
+  const signatureConsent = $("#signature-consent").checked;
+  const command = {...pendingApplication, createAccount: $("#apply-create-account").checked, signatureConsent, screening: signatureConsent};
+  if (signatureConsent) {
+    $("#signature-consent").checked = false;
+    updateSignatureAction();
+  }
   pendingApplication = null; $("#apply-confirmation").close();
   const result = await request({type: "open-listing", ...command});
   if (result.moveInMessage) toast(result.moveInMessage);
@@ -795,7 +851,7 @@ function renderClientOverview() {
     const locations = value.monitors.filter(m => (m.profileId || applicantLibrary.activeId) === entry.id).map(m => m.name);
     const card = element("div", {class: "client-overview-row"}, element("div", {}, element("strong", {}, entry.name), element("p", {class: "helper"}, locations.join(" · ") || "No locations assigned")), element("span", {class: `pill${readiness.ready ? " available" : ""}`}, status));
     const details = element("details", {}, element("summary", {}, `${readiness.complete}/${readiness.total} application details`), element("p", {class: "helper"}, readiness.ready ? "Details prepared. Website requirements may vary." : `Still needed: ${readiness.missing.join(", ")}`));
-    card.append(details, element("button", {class: "secondary-button", onclick: guard(async () => {
+    card.append(details, element("button", {type: "button", class: "secondary-button", onclick: guard(async () => {
       if (personalDirty) throw new Error("Save personal information before switching profiles.");
       await request({type: "select-profile", id: entry.id}); await loadState(); switchTab("personal");
     })}, "Edit profile"));
