@@ -6,7 +6,7 @@ export const PROFILE_SECTIONS = [
   {title: "Identity & contact", fields: [
     ["title", "Title", ["Mr.", "Ms.", "Mrs.", "Dr."]], ["firstName", "First name"], ["middleName", "Middle name"], ["noMiddleName", "I have no middle name", yesNo], ["lastName", "Last name"], ["dateOfBirth", "Date of birth", "date"], ["nationality", "Nationality"], ["countryOfResidence", "Country of residence"], ["email", "Email", "email"], ["phone", "Phone", "tel"], ["preferredName", "Preferred name"], ["contactMethod", "Preferred contact method", ["Call", "Text", "Email"]],
   ]},
-  {title: "Moving preferences", helper: "Leave the earliest move-in date empty for the first allowed weekday. Weekend dates advance to the next allowed weekday when you apply.", fields: [["moveInFrom", "Earliest move-in date", "date"]]},
+  {title: "Moving preferences", helper: "Leave the earliest move-in date empty for the first allowed weekday. Weekend dates advance to the next allowed weekday when you apply. Budget uses published rent; listings without a published rent or size are excluded when that preference is set.", fields: [["moveInFrom", "Earliest move-in date", "date"], ["maxRent", "Maximum monthly rent (€)", "number"], ["minSize", "Minimum size (m²)", "number"], ["preferredApartmentType", "Preferred apartment type", ["studio", "1-bedroom", "2-bedroom", "3-plus"]]]},
   {title: "Current housing", fields: [
     ["country", "Country"], ["address", "Street address"], ["addressLine2", "Address line two"], ["postalCode", "Postal code"], ["city", "City"], ["housingType", "Rent or own", ["Rent", "Own", "Other"]], ["residencyFrom", "Living here since", "date"], ["monthlyHousingCost", "Monthly rent / mortgage (€)", "number"], ["reasonForMoving", "Reason for moving"], ["managementCompany", "Management company"], ["managementPhone", "Management company phone", "tel"],
   ]},
@@ -75,13 +75,15 @@ export function selectMoveInDate(profile) {
   // Always skip weekends, even when the portal omits them from its configuration.
   const excludedDays = [0, 6, ...excluded.split(',').filter(value => value.trim()).map(Number)];
   while (date <= maximum && excludedDays.includes(date.getDay())) date.setDate(date.getDate() + 1);
-  if (date > maximum) return {count: 0, moveInMessage: 'No allowed move-in date is available on or after your preferred date.'};
+  if (date > maximum) return {count: 0, moveInMessage: 'No weekday move-in date fits your preference within the website’s available date range.'};
   const value = `${String(date.getDate()).padStart(2, '0')}-${String(date.getMonth() + 1).padStart(2, '0')}-${date.getFullYear()}`;
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
   input.dispatchEvent(new Event('input', {bubbles: true}));
   // Let Chrome return the selected date before RentCafe's change handler navigates.
   setTimeout(() => input.dispatchEvent(new Event('change', {bubbles: true})), 0);
-  return {count: 1, moveInDate: value, moveInMessage: `Selected move-in date: ${value}. Review the lease summary before continuing.`};
+  const adjusted = date.getTime() !== start.getTime();
+  const reason = start < minimum ? 'The website opens move-ins later than your preferred date.' : [0, 6].includes(start.getDay()) ? 'Your preferred date falls on a weekend.' : adjusted ? 'The website blocks the preferred weekday.' : 'Your preferred date is allowed.';
+  return {count: 1, moveInDate: value, moveInMessage: `Selected earliest allowed weekday: ${value}. ${profile.moveInFrom ? reason : 'No preference saved; using the first available weekday.'}`, moveInReason: reason};
 }
 
 /** Advance only after Apply has selected an allowed move-in date. */

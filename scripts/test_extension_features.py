@@ -82,6 +82,7 @@ def main():
                 listing_page = context.new_page()
                 listing_page.goto(URL)
                 worker = context.service_workers[0] if context.service_workers else context.wait_for_event("serviceworker")
+                worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profile folder disabled in isolated tests');};}")
                 extension_id = worker.url.split("/")[2]
                 panel = context.new_page()
                 panel.on("pageerror", lambda error: errors.append(str(error)))

@@ -17,6 +17,8 @@ const availabilityQueue = [];
 let activeAvailability = null;
 let reloadState = false;
 let personalProfile = {};
+let applicantLibrary = {profiles: []};
+let pendingApplication = null;
 let compactView = false;
 import {EMAIL_KEY, CONTACT_KEY} from "./email.js";
 let contactsLoaded = false;
@@ -71,6 +73,7 @@ async function loadState() {
       value = state;
       personalProfile = preferences[PROFILE_KEY] || {};
       const library = await request({type: "profiles"});
+      applicantLibrary = library;
       const folder = await request({type: "profile-folder-status"});
       $("#profile-folder-status").textContent = folder.enabled ? `Saved to ${folder.path}/profiles.json` : "Keep a JSON copy alongside SpotAlert.";
       $("#enable-profile-folder").hidden = folder.enabled;
@@ -128,6 +131,8 @@ function render() {
   $("#readiness-description").textContent = readiness.ready ? "Canvas applicant details prepared. Review the website form and agreements before submitting." : `Still needed: ${readiness.missing.slice(0, 6).join(", ")}${readiness.missing.length > 6 ? `, and ${readiness.missing.length - 6} more` : ""}. Based on the current Canvas form; employment and optional fields may also apply.`;
   renderDebug();
   renderNotifications();
+  renderClientOverview();
+  renderDeliveryHistory();
   const totals = availabilityTotals(value.monitors);
   $("#apartment-count").textContent = `${totals.unknownCounts ? "≥" : ""}${totals.apartments}`;
   $("#apartment-count-note").hidden = !totals.unknownCounts;
@@ -187,6 +192,19 @@ function renderDetail() {
   }));
   toolbar.append(element("label", {class: "refresh-control"}, "Refresh every", refresh), element("button", {id: "configure-monitor", class: "small-button", onclick: () => openEditor(monitor)}, "Configure monitor"));
   root.append(toolbar);
+  const profileSelect = element("select", {"aria-label": "Applicant for this location"});
+  profileSelect.append(element("option", {value: ""}, "Use active profile"));
+  for (const entry of applicantLibrary.profiles) profileSelect.append(element("option", {value: entry.id}, entry.name));
+  profileSelect.value = monitor.profileId || "";
+  if (monitor.profileId && !applicantLibrary.profiles.some(item => item.id === monitor.profileId)) profileSelect.append(element("option", {value: monitor.profileId, selected: "selected"}, "Deleted profile · select another"));
+  profileSelect.addEventListener("change", guard(async () => {
+    await request({type: "assign-profile", id: monitor.id, profileId: profileSelect.value}); await loadState();
+  }));
+  const applicant = applicantLibrary.profiles.find(item => item.id === (monitor.profileId || applicantLibrary.activeId));
+  const preferences = applicant?.details || {};
+  root.append(element("div", {class: "location-applicant"}, element("label", {}, "Applicant for this location", profileSelect), element("p", {class: "helper"}, `${applicant?.name || "Choose an applicant"} · ${preferences.maxRent ? `up to €${preferences.maxRent}/month` : "Any budget"} · ${preferences.minSize ? `at least ${preferences.minSize} m²` : "Any size"} · ${preferences.moveInFrom ? `move in from ${preferences.moveInFrom}` : "Earliest weekday move-in"}`)));
+  if (monitor.application?.moveInMessage) root.append(element("p", {class: "move-in-feedback", role: "status"}, monitor.application.moveInMessage));
+
   const attention = monitor.error ? element("section", {class: "attention-card", "aria-label": "Monitoring status"}) : null;
   if (attention) {
     attention.append(element("h3", {class: "attention-title"}, "Needs attention"));
@@ -275,6 +293,7 @@ function renderDetail() {
       element("div", {class: "sample-top"}, element("h4", {class: "sample-name"}, sample.name || "Floor plan description unavailable"), element("span", {class: `pill${sample.matched ? " available" : ""}`}, sample.included === false ? "Filtered out" : sample.matched ? "Available" : "Not available")),
       element("p", {class: "sample-type"}, {studio: "Studio", "1-bedroom": "1 bedroom", "2-bedroom": "2 bedrooms", "3-plus": "3+ bedrooms"}[sample.apartmentType] || ""),
       details.length ? element("dl", {class: "listing-details"}, ...details.map(([label, value]) => element("div", {}, element("dt", {}, label), element("dd", {}, value)))) : element("p", {class: "sample-context"}, "Check again to load apartment details."),
+      sample.preferenceReasons?.length && element("p", {class: "sample-context"}, sample.preferenceReasons.join(" · ")),
       sample.matched && listingButton(monitor, sample));
   })));
   root.append(sampleSection);
@@ -393,8 +412,7 @@ $("#export").addEventListener("click", () => {
 $(".brand").addEventListener("click", (event) => { event.preventDefault(); window.scrollTo({top: 0, behavior: "smooth"}); });
 function listingButton(monitor, sample) {
   const button = element("button", {class: "text-button listing-link", onclick: guard(async () => {
-    const result = await request({type: "open-listing", id: monitor.id, listingId: listingKey(sample)});
-    if (result.moveInMessage) toast(result.moveInMessage);
+    showApplyConfirmation(monitor, sample);
   })}, "Apply ↗");
   button.disabled = monitor.application?.status === "running";
   return button;
@@ -429,7 +447,8 @@ $("#open-availability").addEventListener("click", guard(async () => {
   const monitor = activeAvailability;
   if (!monitor) return;
   const listing = monitor.alert?.listings?.[0];
-  await request(listing && !monitor.alert.test ? {type: "open-listing", id: monitor.id, listingId: listingKey(listing)} : {type: "open", id: monitor.id});
+  if (listing && !monitor.alert.test) showApplyConfirmation(monitor, listing);
+  else await request({type: "open", id: monitor.id});
   selectedId = monitor.id;
   render();
   $("#availability-popup").close();
@@ -741,3 +760,58 @@ $("#enable-profile-folder").addEventListener("click", guard(async () => {
   await request({type: "enable-profile-folder"}); await loadState(); toast("Profiles saved to the local SpotAlert folder.");
 }));
 $("#open-profile-folder").addEventListener("click", guard(() => request({type: "open-profile-folder"})));
+
+function showApplyConfirmation(monitor, sample) {
+  const applicant = applicantLibrary.profiles.find(item => item.id === (monitor.profileId || applicantLibrary.activeId));
+  if (!applicant) throw new Error("Choose an applicant profile for this location first.");
+  if (personalDirty && applicant.id === applicantLibrary.activeId) throw new Error("Save personal information before applying.");
+  const preferred = applicant.details.moveInFrom;
+  let dateLabel = "First allowed weekday";
+  if (preferred) {
+    const date = new Date(`${preferred}T12:00:00`);
+    while ([0, 6].includes(date.getDay())) date.setDate(date.getDate() + 1);
+    dateLabel = `On or after ${date.getFullYear()}-${String(date.getMonth()+1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  }
+  pendingApplication = {id: monitor.id, listingId: listingKey(sample), profileId: applicant.id};
+  const list = $("#apply-confirmation-details"); list.replaceChildren();
+  for (const [label, detail] of [["Applicant", applicant.name], ["Name", [applicant.details.firstName, applicant.details.lastName].filter(Boolean).join(" ") || "Not provided"], ["Email", applicant.details.email || "Not provided"], ["Location", monitor.name], ["Apartment", sample.name || sample.context || "Selected apartment"], ["Rent", sample.rent || "Not published"], ["Move-in", dateLabel]]) list.append(element("dt", {}, label), element("dd", {}, detail));
+  $("#apply-confirmation-note").textContent = "The exact move-in date is checked against the website calendar. Weekends and blocked days are skipped. You review agreements and final submission on the website.";
+  $("#apply-confirmation").showModal();
+}
+$("#cancel-apply").addEventListener("click", () => $("#apply-confirmation").close());
+$("#confirm-apply").addEventListener("click", guard(async () => {
+  if (!pendingApplication) return;
+  const command = pendingApplication;
+  pendingApplication = null; $("#apply-confirmation").close();
+  const result = await request({type: "open-listing", ...command});
+  if (result.moveInMessage) toast(result.moveInMessage);
+}));
+function renderClientOverview() {
+  const list = $("#client-overview-list"); list.replaceChildren();
+  for (const entry of applicantLibrary.profiles) {
+    const readiness = profileCompleteness(entry.details);
+    const hasDetails = Object.values(entry.details).some(Boolean);
+    const status = readiness.ready ? "Ready to apply" : hasDetails ? "Missing details" : "Awaiting information";
+    const locations = value.monitors.filter(m => (m.profileId || applicantLibrary.activeId) === entry.id).map(m => m.name);
+    const card = element("div", {class: "client-overview-row"}, element("div", {}, element("strong", {}, entry.name), element("p", {class: "helper"}, locations.join(" · ") || "No locations assigned")), element("span", {class: `pill${readiness.ready ? " available" : ""}`}, status));
+    const details = element("details", {}, element("summary", {}, `${readiness.complete}/${readiness.total} application details`), element("p", {class: "helper"}, readiness.ready ? "Details prepared. Website requirements may vary." : `Still needed: ${readiness.missing.join(", ")}`));
+    card.append(details, element("button", {class: "secondary-button", onclick: guard(async () => {
+      if (personalDirty) throw new Error("Save personal information before switching profiles.");
+      await request({type: "select-profile", id: entry.id}); await loadState(); switchTab("personal");
+    })}, "Edit profile"));
+    list.append(card);
+  }
+}
+function renderDeliveryHistory() {
+  const list = $("#delivery-history-list"); list.replaceChildren();
+  for (const delivery of value.deliveries || []) {
+    const row = element("div", {class: "delivery-row"}, element("div", {}, element("strong", {}, `${delivery.channel === "email" ? "Email" : delivery.channel === "sound" ? "Sound" : "Desktop"} · ${delivery.site}`), element("p", {class: "helper"}, `${new Date(delivery.at).toLocaleString()} · ${delivery.attempts} attempt${delivery.attempts === 1 ? "" : "s"}${delivery.alert.test ? " · Test" : ""}`), delivery.error && element("p", {class: "form-error"}, delivery.error)), element("span", {class: `pill${delivery.status === "sent" ? " available" : " error"}`}, delivery.status === "sent" ? "Sent" : "Failed"));
+    if (delivery.status === "failed") row.append(element("button", {class: "secondary-button", onclick: guard(async event => {
+      event.currentTarget.disabled = true;
+      try { await request({type: "retry-delivery", deliveryId: delivery.id}); }
+      finally { await loadState(); }
+    })}, "Retry"));
+    list.append(row);
+  }
+  if (!list.childNodes.length) list.append(element("p", {class: "helper"}, "Availability alert deliveries will appear here."));
+}

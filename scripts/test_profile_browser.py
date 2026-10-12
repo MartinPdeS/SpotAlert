@@ -14,6 +14,7 @@ def main():
         context = p.chromium.launch_persistent_context(profile, channel='chromium', headless=True, args=[f'--disable-extensions-except={extension}', f'--load-extension={extension}'], ignore_default_args=['--disable-extensions'])
         try:
             worker = context.service_workers[0] if context.service_workers else context.wait_for_event('serviceworker')
+            worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profile folder disabled in isolated tests');};}")
             panel = context.new_page()
             panel.goto(worker.url.replace('background.js', 'panel.html'))
             panel.get_by_role('tab', name='Personal information', exact=True).click()
@@ -128,6 +129,10 @@ def main():
             expect(panel.locator('#profile-name')).to_have_value('Jamie client')
             expect(panel.locator('#personal-firstName')).to_have_value('Jamie')
             expect(panel.locator('#personal-registrationPassword')).to_have_value('ClientExisting123!')
+            panel.get_by_role('tab', name='Clients', exact=True).click()
+            expect(panel.locator('#client-overview-list')).to_contain_text('Jamie client')
+            expect(panel.locator('#client-overview-list')).to_contain_text('Missing details')
+            panel.screenshot(path=str(ROOT/'artifacts/extension/client-readiness-overview.png'), full_page=True)
         finally:
             context.close()
     print('Expanded profile browser check passed: persistence, separate people, dates, choices, consent untouched and responsive layout.')

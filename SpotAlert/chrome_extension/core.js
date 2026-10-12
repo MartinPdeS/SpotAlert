@@ -1,3 +1,4 @@
+import {preferenceMatch} from "./preferences.js";
 /** Shared, browser-independent rule validation and evaluation. */
 export const OURDOMAIN = "https://thisisourdomain.securerc.co.uk";
 export const DEFAULT_URL = `${OURDOMAIN}/onlineleasing/ourdomain-amsterdam-diemen2/floorplans.aspx`;
@@ -85,9 +86,10 @@ export function evaluateRule(samples, rule, filters = {}) {
       : rule.mode === "equals" ? value === expected : value !== expected;
     const type = apartmentType(sample);
     const id = listingKey(sample);
-    const included = (!(filters.types || []).length || filters.types.includes(type))
+    const preference = preferenceMatch({...sample, apartmentType: type}, filters.clientPreferences);
+    const included = preference.included && (!(filters.types || []).length || filters.types.includes(type))
       && (!(filters.floorplans || []).length || filters.floorplans.includes(id));
-    return {...sample, id, apartmentType: type, included, ruleMatched: matched, matched: matched && included};
+    return {...sample, id, apartmentType: type, included, preferenceReasons: preference.reasons, ruleMatched: matched, matched: matched && included};
   });
   return {available: matches.some((sample) => sample.matched), matches};
 }

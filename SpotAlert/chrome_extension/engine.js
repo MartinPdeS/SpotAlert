@@ -15,6 +15,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
   const fastTimers = new Map();
   const debugRuns = new Map();
   const applications = new Map();
+  const deliveryRetries = new Set();
   function clearFastTimer(id) {
     if (fastTimers.has(id)) timers.clearTimeout(fastTimers.get(id));
     fastTimers.delete(id);
@@ -79,6 +80,15 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
   async function saveLibrary(library) {
     if ((await api.storage.local.get(FOLDER_KEY))[FOLDER_KEY]?.enabled) await profileFolder("write", library);
     await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: library.profiles.find(item => item.id === library.activeId).details});
+    await mutate(value => {
+      for (const monitor of value.monitors) {
+        const applicant = library.profiles.find(item => item.id === (monitor.profileId || library.activeId));
+        if (applicant && monitor.samples.length) {
+          const result = evaluateRule(monitor.samples, monitor.rule, {...monitor.filters, clientPreferences: applicant.details});
+          monitor.samples = result.matches; monitor.available = result.available;
+        }
+      }
+    });
   }
   async function profileLibrary() {
     const saved = await api.storage.local.get([PROFILES_KEY, PROFILE_KEY, FOLDER_KEY]);
@@ -105,6 +115,13 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     const library = {activeId: "default", profiles: [{id: "default", name: "My profile", details: validateProfile(saved[PROFILE_KEY])}]};
     await api.storage.local.set({[PROFILES_KEY]: library});
     return library;
+  }
+  async function assignedProfile(monitor) {
+    const library = await profileLibrary();
+    const id = monitor.profileId || library.activeId;
+    const entry = library.profiles.find(item => item.id === id);
+    if (!entry) throw new Error("The assigned applicant profile was deleted. Choose a profile for this location.");
+    return entry;
   }
   async function initialize() {
     await mutate((value) => {
@@ -328,7 +345,8 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       await patchRun(id, generation, (current) => { current.phase = "reading"; });
       const result = await executeRead(tab.id, monitor.rule);
       if (!samePage(result.url, monitor.url)) throw new Error("The tab navigated away from the saved URL. Check login or update the monitor URL.");
-      const evaluated = evaluateRule(result.samples, monitor.rule, monitor.filters);
+      const applicant = await assignedProfile(monitor);
+      const evaluated = evaluateRule(result.samples, monitor.rule, {...monitor.filters, clientPreferences: applicant.details});
       let alert = null;
       if (controller.signal.aborted) return;
       const emailEnabled = Boolean((await api.storage.local.get(EMAIL_KEY))[EMAIL_KEY]?.enabled);
@@ -448,11 +466,12 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       await api.scripting.executeScript({target: {tabId}, func: () => { document.documentElement.dataset.spotalertApplicationStopped = "true"; }});
     } catch { /* A closed or navigating tab needs no further action. */ }
   }
-  async function runApplication(id, listing, existingTabId, signal) {
+  async function runApplication(id, listing, existingTabId, signal, expectedProfileId) {
     const monitor = find(await state(), id);
     const origin = new URL(monitor.url).origin;
-    await profileLibrary();
-    const profile = validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
+    const applicant = await assignedProfile(monitor);
+    if (expectedProfileId && applicant.id !== expectedProfileId) throw new Error("The location’s applicant changed. Review Apply again.");
+    const profile = validateProfile(applicant.details);
     let tabId = existingTabId;
     let filled = 0;
     const done = async (message, kind = "review", details = {}) => {
@@ -513,7 +532,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
               const date = (await api.scripting.executeScript({target: {tabId}, func: selectMoveInDate, args: [profile]}))[0]?.result;
               if (!date?.moveInDate) return done(date?.moveInMessage || "Choose a move-in date on the website.", "date");
               dates.set(key, date.moveInDate);
-              await applicationStatus(id, {message: `Selecting move-in date ${date.moveInDate}…`});
+              await applicationStatus(id, {message: date.moveInMessage, moveInDate: date.moveInDate, moveInMessage: date.moveInMessage});
               await new Promise(resolve => setTimeout(resolve, 1000));
               continue;
             }
@@ -544,7 +563,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       return done(signal.aborted ? "Application automation stopped." : error.message, signal.aborted ? "cancelled" : "error");
     }
   }
-  async function openListing(id, listingId, resume = false) {
+  async function openListing(id, listingId, resume = false, expectedProfileId = null) {
     if (applications.has(id)) return applications.get(id).promise;
     const monitor = find(await state(), id);
     const listing = [...(monitor.alert?.listings || []), ...monitor.samples].find(sample => listingKey(sample) === (resume ? monitor.application?.listingId : listingId));
@@ -555,7 +574,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     applications.set(id, run);
     run.promise = (async () => {
       await applicationStatus(id, {listingId: resume ? monitor.application.listingId : listingKey(listing)});
-      return runApplication(id, listing || {}, resume ? monitor.application.tabId : null, controller.signal);
+      return runApplication(id, listing || {}, resume ? monitor.application.tabId : null, controller.signal, expectedProfileId);
     })().finally(() => applications.delete(id));
     return run.promise;
   }
@@ -636,11 +655,21 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
 ${sample.context || sample.text}
 ${link}`;
     }).join("\n\n").slice(0, 1600) || "This is a test availability alert.";
+    const subject = `${alert.test ? "Test · " : ""}${monitor.name} · New availability`;
+    const channels = ["desktop", ...(sound ? ["sound"] : []), "email"];
     const results = await Promise.allSettled([
       desktop ? api.notifications.create(notificationId, {type: "basic", iconUrl: api.runtime.getURL("icons/128.png"), title: `${alert.test ? "Test · " : ""}${monitor.name} · ${alert.listings.length || 1} available`, message, silent: true}) : Promise.resolve({skipped: true}),
       ...(sound ? [playAlertSound(api)] : []),
-      sendEmailAlert(api, alert, `${alert.test ? "Test · " : ""}${monitor.name} · New availability`, message),
+      sendEmailAlert(api, alert, subject, message),
     ]);
+    await mutate(value => {
+      value.deliveries ||= [];
+      results.forEach((result, index) => {
+        if (result.status === "fulfilled" && result.value?.skipped) return;
+        value.deliveries.unshift({id: crypto.randomUUID(), monitorId: id, site: monitor.name, channel: channels[index], at: now(), status: result.status === "fulfilled" ? "sent" : "failed", error: result.status === "rejected" ? result.reason.message : null, attempts: 1, alert, subject, message});
+      });
+      value.deliveries = value.deliveries.slice(0, 100);
+    });
     const failures = results.map((result, index) => result.status === "rejected" ? `${index === 0 ? "Desktop notification" : sound && index === 1 ? "Alert sound" : "Email"} failed: ${result.reason.message}` : null).filter(Boolean);
     for (const message of failures) await mutate((value) => history(find(value, id), {kind: "warning", message}));
     return {email: results.at(-1).status === "fulfilled" && !results.at(-1).value?.skipped, desktop: desktop && results[0].status === "fulfilled", sound: sound ? results[1]?.status === "fulfilled" : false, errors: failures};
@@ -710,6 +739,20 @@ ${link}`;
         return {tabId: capture.tabId};
       }
       case "profile": return validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
+      case "assign-profile": {
+        const library = await profileLibrary();
+        if (message.profileId && !library.profiles.some(item => item.id === message.profileId)) throw new Error("Profile not found.");
+        await mutate(value => {
+          const monitor = find(value, message.id);
+          monitor.profileId = message.profileId || null;
+          const applicant = library.profiles.find(item => item.id === (monitor.profileId || library.activeId));
+          if (monitor.samples.length) {
+            const evaluated = evaluateRule(monitor.samples, monitor.rule, {...monitor.filters, clientPreferences: applicant.details});
+            monitor.samples = evaluated.matches; monitor.available = evaluated.available;
+          }
+        });
+        return state();
+      }
       case "profiles": return profileLibrary();
       case "profile-folder-status": return (await api.storage.local.get(FOLDER_KEY))[FOLDER_KEY] || {enabled: false};
       case "enable-profile-folder": {
@@ -785,6 +828,25 @@ ${link}`;
         await saveLibrary(library);
         return {saved: true};
       }
+      case "retry-delivery": {
+        const delivery = (await state()).deliveries?.find(item => item.id === message.deliveryId);
+        if (!delivery || delivery.status !== "failed") throw new Error("Only failed deliveries can be retried.");
+        if (deliveryRetries.has(delivery.id)) throw new Error("This delivery is already being retried.");
+        deliveryRetries.add(delivery.id);
+        let error = null;
+        try {
+          if (delivery.channel === "email") await sendEmailAlert(api, delivery.alert, delivery.subject, delivery.message, true);
+          else if (delivery.channel === "sound") await playAlertSound(api);
+          else await api.notifications.create(`${delivery.monitorId}:${delivery.alert.id}`, {type: "basic", iconUrl: api.runtime.getURL("icons/128.png"), title: delivery.site, message: delivery.message, silent: true});
+        } catch (failure) { error = failure.message; }
+        await mutate(value => {
+          const row = value.deliveries.find(item => item.id === delivery.id);
+          Object.assign(row, {status: error ? "failed" : "sent", error, at: now(), attempts: row.attempts + 1});
+        });
+        deliveryRetries.delete(delivery.id);
+        if (error) throw new Error(error);
+        return {sent: true};
+      }
       case "test-email": {
         const alert = {id: crypto.randomUUID()};
         return sendEmailAlert(api, alert, "SpotAlert · Test email", "Your SpotAlert Resend connection works. This is a test, not an availability alert.", true);
@@ -800,7 +862,7 @@ ${link}`;
       case "open": return {tabId: await open(message.id)};
       case "open-affected": return {tabId: await openAffected(message.id)};
       case "open-listing": {
-        const result = await openListing(message.id, message.listingId);
+        const result = await openListing(message.id, message.listingId, false, message.profileId);
         return typeof result === "number" ? {tabId: result} : result;
       }
       case "continue-application": return openListing(message.id, null, true);

@@ -73,9 +73,11 @@
         </div>
         <div class="notification-save"><span id="notification-save-status" role="status">Email and SMS settings</span><button class="primary-button" type="submit">Save settings</button></div>
       </form>
+      <section class="delivery-history"><div class="section-heading"><h3>Notification delivery history</h3><span class="muted">Latest 100 deliveries</span></div><p class="helper">Email status confirms provider acceptance. Desktop and sound status confirm Chrome delivery.</p><div id="delivery-history-list"></div></section>
     </section>
     <section id="clients-view" role="tabpanel" aria-labelledby="clients-tab" hidden>
       <div class="personal-heading"><div><span class="eyebrow">CLIENT ONBOARDING</span><h2>Prepare a client profile</h2><p>Ask once. Review the reply. Create a profile.</p></div></div>
+      <section class="client-overview"><div class="section-heading"><h3>Client readiness</h3><span class="muted">Saved profiles</span></div><div id="client-overview-list"></div></section>
       <div class="client-grid">
         <section class="client-card"><span class="eyebrow">01 · REQUEST DETAILS</span><h3>Send a questionnaire</h3><p class="helper">Uses your Resend settings from Notifications. Sending to clients requires a verified sender domain.</p>
           <label>Client name<input id="client-name" maxlength="80" placeholder="Alex"></label><label>Client email<input id="client-email" type="email" placeholder="alex@example.com"></label><label>Replies go to<input id="client-reply-to" type="email" placeholder="Your email address"></label>
@@ -104,6 +106,7 @@
     </form>
     </section>
   </main>
+  <dialog id="apply-confirmation" aria-labelledby="apply-confirmation-title"><h2 id="apply-confirmation-title">Review application</h2><p class="helper">Confirm the applicant and apartment before automatic filling starts.</p><dl id="apply-confirmation-details" class="client-answer-list"></dl><p id="apply-confirmation-note" class="helper"></p><div class="editor-actions"><button id="cancel-apply" class="secondary-button">Cancel</button><button id="confirm-apply" class="primary-button">Confirm and apply</button></div></dialog>
   <dialog id="editor" aria-labelledby="editor-title">
     <form id="monitor-form">
       <div class="section-heading"><div><h2 id="editor-title">New monitor</h2></div><button type="button" id="close-editor" class="icon-button" aria-label="Close editor">×</button></div>

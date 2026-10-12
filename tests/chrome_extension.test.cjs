@@ -1043,3 +1043,53 @@ test('local profile folder mirrors saves and restores after Chrome storage remov
   await assert.rejects(engine.dispatch({type:'save-profile', profile:{firstName:'Sam'}}), /helper unavailable/);
   assert.equal(api.data[PROFILE_KEY].firstName, 'Alex');
 });
+
+test('client apartment preferences check budget, types, sizes and unknown details', async () => {
+  const {preferenceMatch} = await import('../SpotAlert/chrome_extension/preferences.js');
+  const profile = {maxRent:'1800', minSize:'35', preferredApartmentType:'1-bedroom'};
+  assert.equal(preferenceMatch({rent:'€ 1.724,27', size:'40 m²', apartmentType:'1-bedroom'}, profile).included, true);
+  assert.equal(preferenceMatch({rent:'€1,600 – €2,000', size:'40 m²', apartmentType:'1-bedroom'}, profile).included, false);
+  assert.ok(preferenceMatch({rent:'€2,000', size:'30 m²', apartmentType:'studio'}, profile).reasons.length === 3);
+  assert.equal(preferenceMatch({rent:'€1,700', size:'400 sq ft', apartmentType:'1-bedroom'}, profile).included, true);
+  assert.ok(preferenceMatch({apartmentType:'1-bedroom'}, profile).reasons.includes('Rent not published'));
+});
+
+test('profile assignment applies client filters and survives active profile switching', async () => {
+  const {engine, api, id} = await setup();
+  await engine.dispatch({type:'save-profile', name:'Alex', profile:{firstName:'Alex',maxRent:'1500'}});
+  await engine.dispatch({type:'assign-profile', id, profileId:'default'});
+  await engine.dispatch({type:'create-profile'});
+  await engine.dispatch({type:'save-profile', name:'Sam', profile:{firstName:'Sam',maxRent:'2500'}});
+  api.pageSamples = [{text:'Apply now', rent:'€1800', size:'40 m²', name:'Studio'}];
+  await engine.check(id);
+  assert.equal((await engine.state()).monitors[0].available, false);
+  const {PROFILES_KEY} = await import('../SpotAlert/chrome_extension/profile.js');
+  await engine.dispatch({type:'assign-profile', id, profileId:api.data[PROFILES_KEY].activeId});
+  assert.equal((await engine.state()).monitors[0].available, true);
+  await assert.rejects(engine.dispatch({type:'assign-profile', id, profileId:'missing'}), /Profile not found/);
+});
+
+test('notification delivery history retries only the failed channel', async () => {
+  const {engine, api, id} = await setup();
+  const {EMAIL_KEY, CONTACT_KEY} = await import('../SpotAlert/chrome_extension/email.js');
+  api.data[EMAIL_KEY] = {enabled:true,apiKey:'re_test'};
+  api.data[CONTACT_KEY] = {email:'alex@example.com'};
+  const original = globalThis.fetch;
+  let emailCalls = 0;
+  try {
+    globalThis.fetch = async () => {emailCalls++; return {ok:false,status:429,json:async()=>({})};};
+    await engine.dispatch({type:'test-alert', id, sound:false});
+    const log = (await engine.state()).deliveries;
+    const failed = log.find(item=>item.channel==='email');
+    assert.equal(failed.status, 'failed');
+    assert.equal(log.find(item=>item.channel==='desktop').status, 'sent');
+    const desktops = api.notificationsLog.length;
+    globalThis.fetch = async () => {emailCalls++; return {ok:true,json:async()=>({id:'mock-sent'})};};
+    await engine.dispatch({type:'retry-delivery',deliveryId:failed.id});
+    assert.equal(api.notificationsLog.length, desktops);
+    const delivered = (await engine.state()).deliveries.find(item=>item.id===failed.id);
+    assert.equal(delivered.status,'sent'); assert.equal(delivered.attempts,2);
+    assert.equal(emailCalls,2);
+    await assert.rejects(engine.dispatch({type:'retry-delivery',deliveryId:failed.id}), /Only failed/);
+  } finally {globalThis.fetch=original;}
+});
