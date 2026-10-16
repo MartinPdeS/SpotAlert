@@ -1,11 +1,13 @@
+import {validateSearch, searchReadiness, searchClaimKey, claimActionId} from "./searches.js";
+import {applicationStage} from './application-state.js';
+import {siteForUrl, readerForRule, pageConfig} from './sites/index.js';
 import {clientQuestionnaire, parseClientReply} from "./clients.js";
-import {ALARM_PREFIX, STORAGE_KEY, defaultMonitor, evaluateRule, sitePattern, siteError, errorKind, newListings, listingKey, safeListingUrl, samePage, inMonitoringHours, nextMonitoringTime, retrySeconds, SUPPORTED_SITES, validateSupportedMonitor, validateMonitor} from "./core.js";
+import {ALARM_PREFIX, STORAGE_KEY, defaultMonitor, evaluateRule, sitePattern, siteError, errorKind, listingKey, safeListingUrl, samePage, inMonitoringHours, nextMonitoringTime, retrySeconds, SUPPORTED_SITES, validateSupportedMonitor, validateMonitor} from "./core.js";
 import {PROFILE_KEY, PROFILES_KEY, validateProfile, fillApplicationForm, selectMoveInDate, startCanvasApplication} from "./profile.js";
 import {applicationStep, captureApplicationStructure, prepareCanvasSignature} from "./application.js";
 import {APPLICATION_BUILD} from "./application-diagnostics.js";
 import {inspectApplicationPage} from "./debug.js";
 import {EMAIL_KEY, sendEmailAlert} from "./email.js";
-import {playAlertSound} from "./alerts.js";
 import {openApplication, readPage, canvasBookingLink} from "./page.js";
 
 /** Persisted scheduling and page checks. No native process or timer loop. */
@@ -16,11 +18,29 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
   const fastTimers = new Map();
   const debugRuns = new Map();
   const applications = new Map();
-  async function currentCanvasApplication(monitorId) {
+  let searchActions = Promise.resolve();
+  const applicationTabs = new Set();
+  const preparationControllers = new Map();
+  function claimApplicationTab(tabId) {
+    if (applicationTabs.has(tabId)) throw new Error('An application action is already running in this tab. Wait for it to finish or stop it first.');
+    applicationTabs.add(tabId);
+  }
+  async function withApplicationTab(tabId, task) {
+    claimApplicationTab(tabId);
+    const controller = new AbortController();
+    preparationControllers.set(tabId, controller);
+    try { return await task(controller.signal); }
+    catch (error) { error.tabId = tabId; throw error; }
+    finally { applicationTabs.delete(tabId); preparationControllers.delete(tabId); }
+  }
+  async function currentApplicationTab(monitorId, requireSignature = false) {
         const isApplicant = tab => {
           try {
             const url = new URL(tab?.url);
-            return url.origin === 'https://canvas-world.securerc.co.uk' && /\/oleapplication\.aspx$/i.test(url.pathname) && url.searchParams.get('stepname')?.toLowerCase() === 'intapplicantinfo';
+            const site = siteForUrl(url.href);
+            if (!site) return false;
+            const applicant = url.pathname.toLowerCase().endsWith('/' + site.application.paths.applicant);
+            return requireSignature ? applicant && !!site.application.agreementSignature && url.searchParams.get('stepname')?.toLowerCase() === site.application.agreementSignature.step : applicant || url.pathname.toLowerCase().endsWith('/' + site.application.paths.booking);
           } catch { return false; }
         };
         const [active] = await api.tabs.query({active: true, currentWindow: true});
@@ -30,12 +50,12 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
           try { tab = await api.tabs.get(monitor.application.tabId); } catch { /* Closed application: use the open page below. */ }
         }
         if (!tab) {
-          const candidates = (await api.tabs.query({currentWindow: true, url: 'https://canvas-world.securerc.co.uk/*'})).filter(isApplicant);
+          const candidates = (await api.tabs.query({currentWindow: true, url: SUPPORTED_SITES.filter(site => !requireSignature || site.application.agreementSignature).map(site => sitePattern(site.url))})).filter(isApplicant);
           candidates.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-          if (candidates.length > 1 && (!candidates[0].lastAccessed || candidates[0].lastAccessed === candidates[1].lastAccessed)) throw new Error('Open the Canvas application you want to use, then return to SpotAlert and retry.');
+          if (candidates.length > 1 && (!candidates[0].lastAccessed || candidates[0].lastAccessed === candidates[1].lastAccessed)) throw new Error('Open the application you want to use, then return to SpotAlert and retry.');
           tab = candidates[0];
         }
-        if (!tab) throw new Error('Open your Canvas applicant information page, then return to SpotAlert and retry.');
+        if (!tab) throw new Error(requireSignature ? 'Open your Canvas applicant information page, then return to SpotAlert and retry.' : 'Open a supported housing application form, then return to SpotAlert and retry.');
     return tab;
   }
 
@@ -101,17 +121,24 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     if (!response?.ok) throw new Error(response?.error || "Could not access the local profile folder.");
     return response;
   }
+  function refreshSearchProfiles(value, library) {
+    for (const search of value.searches || []) {
+      const profile = library.profiles.find(item => item.id === search.profileId);
+      if (!profile) continue;
+      delete search.preferences;
+      for (const [id, result] of Object.entries(search.results || {})) {
+        const monitor = value.monitors.find(item => item.id === id);
+        if (!monitor || !result.matches?.length) continue;
+        try { result.matches = evaluateRule(result.matches, monitor.rule, {clientPreferences: profile.details}).matches; }
+        catch { result.matches = []; result.at = null; }
+      }
+    }
+  }
   async function saveLibrary(library) {
     if ((await api.storage.local.get(FOLDER_KEY))[FOLDER_KEY]?.enabled) await profileFolder("write", library);
     await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: library.profiles.find(item => item.id === library.activeId).details});
     await mutate(value => {
-      for (const monitor of value.monitors) {
-        const applicant = library.profiles.find(item => item.id === (monitor.profileId || library.activeId));
-        if (applicant && monitor.samples.length) {
-          const result = evaluateRule(monitor.samples, monitor.rule, {...monitor.filters, clientPreferences: applicant.details});
-          monitor.samples = result.matches; monitor.available = result.available;
-        }
-      }
+      refreshSearchProfiles(value, library);
     });
   }
   async function profileLibrary() {
@@ -125,6 +152,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
           for (const entry of library.profiles) entry.details = validateProfile(entry.details);
           await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: library.profiles.find(item => item.id === library.activeId).details, [FOLDER_KEY]: {enabled: true, path: disk.folder}});
           profilesLoaded = true;
+          await mutate(value => refreshSearchProfiles(value, library));
           return library;
         }
         const library = saved[PROFILES_KEY] || {activeId: "default", profiles: [{id: "default", name: "My profile", details: validateProfile(saved[PROFILE_KEY])}]};
@@ -142,17 +170,33 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
   }
   async function assignedProfile(monitor) {
     const library = await profileLibrary();
-    const id = monitor.profileId || library.activeId;
+    const id = library.activeId;
     const entry = library.profiles.find(item => item.id === id);
     if (!entry) throw new Error("The assigned applicant profile was deleted. Choose a profile for this location.");
     return entry;
   }
   async function initialize() {
     await mutate((value) => {
+      value.searches ||= [];
+      // Profile preferences are authoritative; retire copied search overrides.
+      for (const search of value.searches) delete search.preferences;
+      value.alertPreferences = {notify: false, popup: false, desktop: false, sound: false};
+      value.searchClaims ||= {};
+      for (const search of value.searches) for (const item of search.activity || []) {
+        if (["queued", "running"].includes(item.status)) { item.status = "interrupted"; item.message = "Worker restarted. Review the application tab before taking further action."; }
+      }
+      for (const [key, claim] of Object.entries(value.searchClaims)) {
+        if (typeof claim === 'string') {
+          const owner = value.searches.find(search => search.activity?.some(item => item.id === claim));
+          const action = owner?.activity.find(item => item.id === claim);
+          value.searchClaims[key] = action ? {...action, searchId: owner.id} : {id: claim, status: 'recorded', at: null, message: 'Previous action recorded; detailed history is no longer available.'};
+        }
+        if (['queued', 'running'].includes(value.searchClaims[key].status)) Object.assign(value.searchClaims[key], {status: 'interrupted', message: 'Chrome restarted. Check the prior application or delivery before authorizing another attempt.'});
+      }
       value.debug ||= {enabled: false, captures: [], seen: {}};
       for (const capture of value.debug.captures || []) if (capture.status === "opening") { capture.status = "error"; capture.error = "Chrome restarted before capture completed."; }
       const previous = value.monitors || [];
-      for (const monitor of previous) if (monitor.application?.status === "running") Object.assign(monitor.application, {status: "stopped", kind: "interrupted", message: "The extension background worker restarted during this application. Open the application tab to check its progress.", updatedAt: now(), trace: [...(monitor.application.trace || []), {at: now(), event: "background-restarted"}].slice(-80)});
+      for (const monitor of previous) if (monitor.application?.status === "running") Object.assign(monitor.application, {status: "stopped", stage: "failed", kind: "interrupted", message: "The extension background worker restarted during this application. Open the application tab to check its progress.", updatedAt: now(), trace: [...(monitor.application.trace || []), {at: now(), event: "background-restarted"}].slice(-80)});
       value.alertPreferences ||= {notify: previous.length ? previous.some(m => m.notify) : true, sound: previous.some(m => m.sound)};
       value.alertPreferences.popup ??= value.alertPreferences.notify;
       value.alertPreferences.desktop ??= value.alertPreferences.notify;
@@ -160,19 +204,21 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
         const existing = previous.find((monitor) => monitor.id === site.id && monitor.url === site.url)
           || previous.find((monitor) => monitor.url === site.url);
         const monitor = existing ? {...defaultMonitor(site.id), ...existing, ...validateMonitor(existing), id: site.id, name: site.name} : defaultMonitor(site.id);
-        // Correct the originally shipped South East rule without replacing custom rules.
-        if (existing && site.id === "ourdomain-amsterdam-south-east"
-            && existing.rule.type === "css" && existing.rule.selector === 'td[data-selenium-id^="Availability_"]'
-            && existing.rule.mode === "not_equals" && existing.rule.expected === "Get Notified") {
+        // Migrate only known shipped rules, preserving user-defined rules.
+        const migration = existing && site.ruleMigrations?.find(item => Object.entries(item.from).every(([key, value]) => existing.rule[key] === value));
+        if (migration) {
           monitor.rule = {...site.rule};
           monitor.available = null;
           monitor.samples = [];
           monitor.error = null;
           monitor.lastCheckedAt = null;
           monitor.lastDurationMs = null;
-          history(monitor, {kind: "updated", message: "South East rule corrected to read application buttons."});
+          history(monitor, {kind: "updated", message: migration.message});
         }
+        delete monitor.profileId;
         monitor.snoozedUntil = null;
+        monitor.alert = null;
+        monitor.pendingArrivals = [];
         Object.assign(monitor, value.alertPreferences);
         return monitor;
       });
@@ -187,6 +233,8 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
         }
       }
     });
+    const savedLibrary = (await api.storage.local.get(PROFILES_KEY))[PROFILES_KEY];
+    if (savedLibrary) await mutate(value => refreshSearchProfiles(value, savedLibrary));
     const value = await state();
     const alarms = await api.alarms.getAll();
     for (const alarm of alarms.filter((item) => item.name.startsWith(ALARM_PREFIX))) {
@@ -212,7 +260,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     });
   }
   async function save(input) {
-    const config = validateSupportedMonitor(input);
+    const config = {...validateSupportedMonitor(input), notify: false, sound: false};
     if (!(await api.permissions.contains({origins: [sitePattern(config.url)]}))) {
       throw new Error("Allow access to this website before saving the monitor.");
     }
@@ -220,9 +268,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     if (input.id && input.id !== site.id) throw new Error("Choose a supported website from the list.");
     clearFastTimer(site.id); cancel(site.id); await api.alarms.clear(alarmName(site.id));
     return mutate((value) => {
-      if (config.notify !== value.alertPreferences?.notify) {
-        value.alertPreferences = {notify: config.notify, popup: config.notify, desktop: config.notify, sound: config.sound};
-      } else value.alertPreferences = {...value.alertPreferences, sound: config.sound};
+      value.alertPreferences = {notify: false, popup: false, desktop: false, sound: false};
       for (const item of value.monitors) Object.assign(item, value.alertPreferences);
       const existing = find(value, site.id);
       const monitor = {
@@ -243,6 +289,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     await mutate((value) => {
       const monitor = find(value, id);
       monitor.enabled = Boolean(enabled);
+      monitor.searchManaged = false;
       monitor.phase = enabled ? "waiting" : "paused";
       monitor.nextCheckAt = null;
       monitor.generation = crypto.randomUUID();
@@ -251,8 +298,10 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     if (enabled) return check(id, true);
   }
   async function stopAll() {
-    await Promise.all([...applications.keys()].map(id => stopApplication(id)));
+    await mutate(value => { for (const search of value.searches || []) { search.enabled = false; search.generation = crypto.randomUUID(); } });
+    await Promise.all([...new Set([...applications.keys(), ...(await state()).monitors.filter(m => m.application?.status === "running").map(m => m.id)])].map(id => stopApplication(id)));
     await mutate(async (value) => {
+      for (const search of value.searches || []) { search.enabled = false; search.generation = crypto.randomUUID(); }
       for (const monitor of value.monitors) {
         clearFastTimer(monitor.id);
         cancel(monitor.id);
@@ -260,6 +309,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
           history(monitor, {kind: "paused", message: "All monitoring stopped. The browser tab stays open."});
         }
         monitor.enabled = false;
+        monitor.searchManaged = false;
         monitor.phase = "paused";
         monitor.nextCheckAt = null;
         monitor.generation = crypto.randomUUID();
@@ -328,7 +378,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     });
   }
   async function executeRead(tabId, rule, waitMs = 12000) {
-    const results = await api.scripting.executeScript({target: {tabId}, func: readPage, args: [rule, waitMs]});
+    const results = await api.scripting.executeScript({target: {tabId}, func: readPage, args: [rule, waitMs, readerForRule(rule)]});
     const result = results[0]?.result;
     if (!result) throw new Error("Chrome could not read the page. Check site access permissions.");
     if (result.error) throw Object.assign(new Error(result.error), {kind: result.errorKind});
@@ -340,7 +390,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     let generation;
     try {
       monitor = (await state()).monitors.find((item) => item.id === id);
-      if (!monitor || controller.signal.aborted) return;
+      if (!monitor || controller.signal.aborted || (scheduled && !monitor.enabled)) return;
       if (scheduled && !inMonitoringHours(now(), monitor.hours)) {
         await mutate((value) => { const current = find(value, id); current.phase = "waiting-hours"; });
         await schedule(id, now());
@@ -369,30 +419,14 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       await patchRun(id, generation, (current) => { current.phase = "reading"; });
       const result = await executeRead(tab.id, monitor.rule);
       if (!samePage(result.url, monitor.url)) throw new Error("The tab navigated away from the saved URL. Check login or update the monitor URL.");
-      const applicant = await assignedProfile(monitor);
-      const evaluated = evaluateRule(result.samples, monitor.rule, {...monitor.filters, clientPreferences: applicant.details});
-      let alert = null;
+      const evaluated = evaluateRule(result.samples, monitor.rule, monitor.filters);
       if (controller.signal.aborted) return;
-      const emailEnabled = Boolean((await api.storage.local.get(EMAIL_KEY))[EMAIL_KEY]?.enabled);
       const accepted = await patchRun(id, generation, (current) => {
         const previousTexts = current.samples.map((sample) => sample.text);
         const nextSamples = evaluated.matches.map((sample) => ({...sample, text: sample.text.slice(0, 2000), applicationUrl: safeListingUrl(sample.applicationUrl, current.url), pageUrl: safeListingUrl(sample.pageUrl, current.url) || current.url}));
         const changed = JSON.stringify(previousTexts) !== JSON.stringify(nextSamples.map((sample) => sample.text));
-        const arrivals = newListings(current.samples, nextSamples);
-        const eligible = new Map(nextSamples.filter((sample) => sample.matched).map((sample) => [listingKey(sample), sample]));
-        const pendingMap = new Map((current.pendingArrivals || []).map((sample) => [listingKey(sample), sample]));
-        for (const sample of arrivals) if (!pendingMap.has(listingKey(sample))) pendingMap.set(listingKey(sample), sample);
-        const pending = [...pendingMap].filter(([key, sample]) => {
-          const latest = eligible.get(key);
-          return latest && !(Number.isFinite(sample.arrivalBaselineCount) && Number.isFinite(latest.availableCount) && latest.availableCount <= sample.arrivalBaselineCount);
-        }).map(([key, sample]) => ({...eligible.get(key), arrivalBaselineCount: sample.arrivalBaselineCount ?? null}));
-        current.pendingArrivals = current.notify || emailEnabled ? pending : [];
-        if ((current.notify || emailEnabled) && pending.length && !(current.snoozedUntil > now())) {
-          alert = {id: crypto.randomUUID(), at: now(), listings: pending, test: false};
-          current.alert = alert;
-          current.pendingArrivals = [];
-          history(current, {kind: "arrival", message: `${pending.length} newly available ${pending.length === 1 ? "floor plan" : "floor plans"}`, listings: pending});
-        }
+        current.pendingArrivals = [];
+        current.alert = null;
         current.available = evaluated.available;
         current.samples = nextSamples;
         current.knownFloorplans = nextSamples.map(({id, name, index, rent, beds, baths}) => ({id, name, index, rent, beds, baths}));
@@ -411,7 +445,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
           preview: nextSamples.filter((sample) => sample.matched).slice(0, 3).map((sample) => sample.text.slice(0, 120)),
         });
       });
-      if (accepted && alert && !controller.signal.aborted) await deliverAlert(id, alert);
+      if (accepted && !controller.signal.aborted) await matchSearches(id, result.samples);
       if (accepted && !controller.signal.aborted) await captureApplications(id, generation, controller.signal);
 
     } catch (error) {
@@ -487,40 +521,46 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       const timestamp = now();
       const trace = details.trace || monitor.application?.trace || [];
       if (diagnostic) trace.push({at: timestamp, ...diagnostic});
-      monitor.application = {...monitor.application, ...details, trace: trace.slice(-80), updatedAt: timestamp};
+      monitor.application = {...monitor.application, stage: applicationStage(details, monitor.application?.stage), ...details, trace: trace.slice(-80), updatedAt: timestamp};
     });
   }
   async function stopApplication(id) {
     applications.get(id)?.controller.abort();
     const tabId = find(await state(), id).application?.tabId;
+    preparationControllers.get(tabId)?.abort();
     if (tabId) try {
       await api.scripting.executeScript({target: {tabId}, func: () => { document.documentElement.dataset.spotalertApplicationStopped = "true"; }});
     } catch { /* A closed or navigating tab needs no further action. */ }
   }
-  async function runApplication(id, listing, existingTabId, signal, expectedProfileId, createAccount = false, signatureOptions = {}) {
+  async function runApplication(id, listing, signal, expectedProfileId, createAccount = false, signatureOptions = {}, snapshot = null) {
     const monitor = find(await state(), id);
     const origin = new URL(monitor.url).origin;
-    const applicant = await assignedProfile(monitor);
-    if (expectedProfileId && applicant.id !== expectedProfileId) throw new Error("The location’s applicant changed. Review Apply again.");
+    const site = siteForUrl(monitor.url);
+    const config = pageConfig(site);
+    const applicant = snapshot || (expectedProfileId ? (await profileLibrary()).profiles.find(entry => entry.id === expectedProfileId) : await assignedProfile(monitor));
+    if (!applicant) throw new Error("The selected profile was deleted. Choose a profile and use Apply again.");
     const profile = validateProfile(applicant.details);
-    let tabId = existingTabId;
+    let tabId = null;
     let filled = 0;
+    let claimed = false;
+    let claimedTabId = null;
     const done = async (message, kind = "review", details = {}) => {
       await applicationStatus(id, {status: "stopped", kind, message, tabId, filled, missingFields: details.missingFields || [], structure: details.structure || null, diagnostic: {event: "stopped", kind}});
-      return {tabId, moveInMessage: message};
+      return {tabId, moveInMessage: message, kind};
     };
     try {
-      if (!tabId) {
+      {
         const direct = safeListingUrl(listing.applicationUrl, monitor.url);
         // Dynamic onclick URLs can be partial: follow the actual floor-plan action.
-        const initial = direct && !/floorplans\.aspx$/i.test(new URL(direct).pathname) && new URL(monitor.url).hostname !== "canvas-world.securerc.co.uk" ? direct : monitor.url;
+        const initial = direct && !/floorplans\.aspx$/i.test(new URL(direct).pathname) && !site.application.preferFloorplanEntry ? direct : monitor.url;
         const tab = await api.tabs.create({url: "about:blank", active: true});
         tabId = tab.id;
+        claimApplicationTab(tabId); claimed = true; claimedTabId = tabId;
         await waitForPage(tabId, signal, false);
         if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
         await api.tabs.update(tabId, {url: initial});
-      } else await api.tabs.update(tabId, {active: true});
-      await applicationStatus(id, {status: "running", build: APPLICATION_BUILD, trace: [], message: "Opening the selected apartment…", tabId, filled, missingFields: [], structure: null, diagnostic: {event: "started"}});
+      }
+      await applicationStatus(id, {status: "running", build: APPLICATION_BUILD, trace: [], applicantName: applicant.name, listingName: listing.name || listing.context || "Selected apartment", message: "Opening the selected apartment…", tabId, filled, missingFields: [], structure: null, diagnostic: {event: "started"}});
       const deadline = Date.now() + 120000;
       const dates = new Map();
       const bookingAttempts = new Map();
@@ -543,51 +583,51 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
             lastInspection = inspection;
           }
           if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
-          if (page.kind === "loading") { await new Promise(resolve => setTimeout(resolve, 250)); continue; }
+          if (page.kind === "loading") { await applicationStatus(id, {stage: "waiting-update"}); await new Promise(resolve => setTimeout(resolve, 250)); continue; }
           if (["verification", "account-exists"].includes(page.kind)) return done(page.message, page.kind, page);
           const path = url.pathname.toLowerCase();
-          if (path.endsWith('termsandotheritems.aspx') && page.kind === 'validation') return done(page.message, page.kind, page);
-          const key = path.endsWith('termsandotheritems.aspx') ? `${path}:${url.searchParams.get('UnitID')}:${url.searchParams.get('FloorPlanID')}` : page.key;
+          if (path.endsWith(config.paths.booking) && page.kind === 'validation') return done(page.message, page.kind, page);
+          const key = path.endsWith(config.paths.booking) ? `${path}:${url.searchParams.get('UnitID')}:${url.searchParams.get('FloorPlanID')}` : page.key;
           if (previousAction === key) {
             if (["missing", "validation"].includes(page.kind)) return done(page.message, page.kind, page);
             // CAPTCHA and booking requests can take time. Retry only after 15s
             // on the same idle booking form, at most three clicks total.
-            if (path.endsWith('termsandotheritems.aspx') && Date.now() - actionAt > 15000 && (bookingAttempts.get(key) || 0) < 3) {
+            if (path.endsWith(config.paths.booking) && Date.now() - actionAt > config.booking.retryAfterMs && (bookingAttempts.get(key) || 0) < config.booking.maxAttempts) {
               bookingAttempts.set(key, (bookingAttempts.get(key) || 0) + 1);
               await applicationStatus(id, {message: "The booking page is idle and has not advanced. Retrying Start Application…", diagnostic: {event: "booking-retry", attempt: bookingAttempts.get(key)}});
               actionAt = Date.now();
-              const retry = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: startCanvasApplication, args: [dates.get(key)]}))[0]?.result;
+              const retry = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: startCanvasApplication, args: [dates.get(key), config.booking.waitMs]}))[0]?.result;
               await applicationStatus(id, {diagnostic: {event: "booking-retry-result", started: !!retry?.started, ...(retry?.diagnostics || {})}});
               if (!retry?.started) return done(retry?.message || "Start Application could not be retried. Check the booking tab.", "date");
               actionAt = Date.now();
               continue;
             }
-            if (Date.now() - actionAt > 15000) return done("The website did not advance after the available attempts. Check the application tab for verification or an error.", "waiting");
+            if (Date.now() - actionAt > config.booking.retryAfterMs) return done("The website did not advance after the available attempts. Check the application tab for verification or an error.", "waiting");
             await new Promise(resolve => setTimeout(resolve, 250)); continue;
           }
-          if (previousAction?.includes('termsandotheritems.aspx') && path.endsWith('oleapplication.aspx')) {
+          if (previousAction?.includes(config.paths.booking) && path.endsWith(config.paths.applicant)) {
             await applicationStatus(id, {diagnostic: {event: "booking-advanced", path: url.pathname, step: page.step}});
           }
           previousAction = null;
-          if (path.endsWith('floorplans.aspx')) {
+          if (path.endsWith(config.paths.floorplans)) {
             if (acted.has(key)) return done("The website returned to the listing page. Check availability before applying again.", "navigation");
             const result = (await api.scripting.executeScript({target: {tabId}, func: openApplication, args: [listing]}))[0]?.result;
             if (!result?.opened) return done(result?.reason || "Could not open this floor plan.", "availability");
             acted.add(key); previousAction = key; actionAt = Date.now();
-            await applicationStatus(id, {message: "Opening availability for the selected floor plan…"});
-          } else if (path.endsWith('availableunits.aspx')) {
+            await applicationStatus(id, {stage: "opening", message: "Opening availability for the selected floor plan…"});
+          } else if (path.endsWith(config.paths.units)) {
             if (acted.has(key)) return done("The website returned to apartment selection. Review the available units.", "availability");
             const result = (await api.scripting.executeScript({target: {tabId}, func: canvasBookingLink, args: [listing]}))[0]?.result;
             if (!result?.opened && !result?.url) return done(result?.error || "No booking action found for this floor plan.", "availability");
             if (result.url) await api.tabs.update(tabId, {url: result.url});
             acted.add(key); previousAction = key; actionAt = Date.now();
-            await applicationStatus(id, {message: "Opening the apartment booking form…"});
-          } else if (path.endsWith('termsandotheritems.aspx')) {
+            await applicationStatus(id, {stage: "opening", message: "Opening the apartment booking form…"});
+          } else if (path.endsWith(config.paths.booking)) {
             if (!dates.has(key)) {
               const date = (await api.scripting.executeScript({target: {tabId}, func: selectMoveInDate, args: [profile]}))[0]?.result;
               if (!date?.moveInDate) return done(date?.moveInMessage || "Choose a move-in date on the website.", "date");
               dates.set(key, date.moveInDate);
-              await applicationStatus(id, {message: date.moveInMessage, moveInDate: date.moveInDate, moveInMessage: date.moveInMessage, diagnostic: {event: "date-selected", date: date.moveInDate}});
+              await applicationStatus(id, {stage: "selecting-date", message: date.moveInMessage, moveInDate: date.moveInDate, moveInMessage: date.moveInMessage, diagnostic: {event: "date-selected", date: date.moveInDate}});
               await new Promise(resolve => setTimeout(resolve, 1000));
               continue;
             }
@@ -595,31 +635,31 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
             // destroy the injected context before Chrome returns its result.
             previousAction = key; actionAt = Date.now();
             bookingAttempts.set(key, 1);
-            const next = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: startCanvasApplication, args: [dates.get(key)]}))[0]?.result;
+            const next = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: startCanvasApplication, args: [dates.get(key), config.booking.waitMs]}))[0]?.result;
             await applicationStatus(id, {diagnostic: {event: "booking-click-result", started: !!next?.started, ...(next?.diagnostics || {})}});
             if (!next?.started) return done(next?.message || "Check the booking page before continuing.", "date");
             bookingAttempts.set(key, 1);
             previousAction = key; actionAt = Date.now();
-            await applicationStatus(id, {message: "Starting the application…"});
-          } else if (path.endsWith('oleapplication.aspx')) {
+            await applicationStatus(id, {stage: "starting", message: "Starting the application…"});
+          } else if (path.endsWith(config.paths.applicant)) {
             if (acted.has(key)) return done("This step has already been continued. Review the website before trying again.", "waiting");
-            if (signatureOptions.enabled && url.hostname === 'canvas-world.securerc.co.uk' && page.step === 'intapplicantinfo') {
-              const details = (await api.scripting.executeScript({target: {tabId}, world: 'MAIN', func: fillApplicationForm, args: [profile]}))[0]?.result;
+            if (signatureOptions.enabled && config.agreementSignature && page.step === config.agreementSignature.step) {
+              const details = (await api.scripting.executeScript({target: {tabId}, world: 'MAIN', func: fillApplicationForm, args: [profile, config]}))[0]?.result;
               filled += details?.count || 0;
-              const prepared = (await api.scripting.executeScript({target: {tabId}, world: 'MAIN', func: prepareCanvasSignature, args: [signatureOptions.screening === true]}))[0]?.result;
+              const prepared = (await api.scripting.executeScript({target: {tabId}, world: 'MAIN', func: prepareCanvasSignature, args: [signatureOptions.screening === true, config]}))[0]?.result;
               if (prepared?.error || !prepared?.signatureSelected || !prepared?.agreementChecked || (signatureOptions.screening && !prepared?.screeningChecked)) return done(prepared?.error || 'The website did not confirm the selected agreement and signature options.', 'signature');
               return done(prepared.message, 'signature');
             }
             if (["documents", "review", "login", "unfamiliar"].includes(page.kind)) return done(page.message, page.kind, page);
-            const result = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: fillApplicationForm, args: [profile]}))[0]?.result;
+            const result = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: fillApplicationForm, args: [profile, config]}))[0]?.result;
             filled += result?.count || 0;
-            await applicationStatus(id, {filled, message: `Filled ${filled} fields from Personal information…`});
+            await applicationStatus(id, {stage: "filling", filled, message: `Filled ${filled} fields from Personal information…`});
             // Reinspect after field changes; never advance based on stale validation.
             const next = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: applicationStep, args: [true, createAccount]}))[0]?.result;
             if (next?.kind === "loading") { await new Promise(resolve => setTimeout(resolve, 250)); continue; }
             if (!next?.advanced) return done(next?.message || "Details filled. Review this step on the website.", next?.kind, next || {});
             acted.add(key); previousAction = key; actionAt = Date.now();
-            await applicationStatus(id, {message: "Continuing to the next application step…"});
+            await applicationStatus(id, {stage: "waiting-update", message: "Continuing to the next application step…"});
           } else return done("This page needs your review before continuing. Download its field structure to help add support.", "unfamiliar", {structure: (await api.scripting.executeScript({target: {tabId}, func: captureApplicationStructure}))[0]?.result});
         } catch (error) {
           if (!/frame|context|document|navigation|removed/i.test(error.message)) throw error;
@@ -627,25 +667,179 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
           await new Promise(resolve => setTimeout(resolve, 250));
         }
       }
-      return done("The application is taking longer than expected. Check the tab, then continue.", "waiting");
+      return done("The application is taking longer than expected. Review the website directly, or use Apply to start a new run.", "waiting");
     } catch (error) {
-      return done(signal.aborted ? "Application automation stopped." : error.message, signal.aborted ? "cancelled" : "error");
+      const closed = /No tab with id|Invalid tab ID|tab.*closed/i.test(error.message);
+      if (closed) tabId = null;
+      return done(signal.aborted ? "Application automation stopped." : closed ? "The application tab was closed. Use Apply on the apartment to start a new run." : error.message, signal.aborted ? "cancelled" : "error");
+    } finally {
+      if (claimed) applicationTabs.delete(claimedTabId);
     }
   }
-  async function openListing(id, listingId, resume = false, expectedProfileId = null, createAccount = false, signatureOptions = {}) {
-    if (applications.has(id)) return applications.get(id).promise;
+  async function openListing(id, listingId, expectedProfileId = null, createAccount = false, signatureOptions = {}) {
+    if (applications.has(id)) {
+      if (applications.get(id).searchId) throw new Error('A profile search is applying at this location. Wait for it to finish or pause that search.');
+      return applications.get(id).promise;
+    }
     const monitor = find(await state(), id);
-    const listing = [...(monitor.alert?.listings || []), ...monitor.samples].find(sample => listingKey(sample) === (resume ? monitor.application?.listingId : listingId));
-    if (!listing && !resume) throw new Error("This listing is no longer in the saved results. Run a new check.");
-    if (resume && !monitor.application?.tabId) throw new Error("Open an application with Apply first.");
+    const listing = [...(monitor.alert?.listings || []), ...monitor.samples].find(sample => listingKey(sample) === listingId);
+    if (!listing) throw new Error("This listing is no longer in the saved results. Run a new check.");
     const controller = new AbortController();
     const run = {controller};
     applications.set(id, run);
     run.promise = (async () => {
-      await applicationStatus(id, {listingId: resume ? monitor.application.listingId : listingKey(listing)});
-      return runApplication(id, listing || {}, resume ? monitor.application.tabId : null, controller.signal, expectedProfileId, createAccount, signatureOptions);
+      await applicationStatus(id, {listingId: listingKey(listing)});
+      return runApplication(id, listing, controller.signal, expectedProfileId, createAccount, signatureOptions);
     })().finally(() => applications.delete(id));
     return run.promise;
+  }
+  // Searches share page reads, but retain their own matches and action records.
+  async function reconcileSearchLocations() {
+    const transitions = await mutate(value => {
+      const wanted = new Set((value.searches || []).filter(search => search.enabled).flatMap(search => search.locationIds));
+      const transitions = [];
+      for (const monitor of value.monitors) {
+        const start = wanted.has(monitor.id) && !monitor.enabled;
+        const stop = !wanted.has(monitor.id) && monitor.searchManaged;
+        if (!start && !stop) continue;
+        Object.assign(monitor, {enabled: start, searchManaged: start, phase: start ? 'waiting' : 'paused', nextCheckAt: null, generation: crypto.randomUUID()});
+        history(monitor, {kind: start ? 'started' : 'paused', message: start ? 'Started for profile searches.' : 'No active profile searches use this location.'});
+        transitions.push({id: monitor.id, enabled: start});
+      }
+      return transitions;
+    });
+    for (const {id, enabled} of transitions) {
+      if (enabled) check(id, true).catch(console.error);
+      else { clearFastTimer(id); cancel(id); await api.alarms.clear(alarmName(id)); }
+    }
+  }
+  async function readinessFor(search, library = null) {
+    library ||= await profileLibrary();
+    const email = (await api.storage.local.get(EMAIL_KEY))[EMAIL_KEY] || {};
+    const result = searchReadiness(search, library.profiles, email);
+    for (const location of result.locations) {
+      const monitor = (await state()).monitors.find(item => item.id === location.id);
+      if (monitor && !(await api.permissions.contains({origins: [sitePattern(monitor.url)]}))) {
+        result.blockers.push(`${location.name}: website access is missing. Restore access in Chrome extension settings.`);
+        location.ready = false;
+      }
+      if (monitor && ['login', 'verification'].includes(monitor.errorKind)) result.warnings.push(`${location.name}: complete the ${monitor.errorKind} prompt in the website tab.`);
+    }
+    result.canStart = !result.blockers.length;
+    result.ready = result.canStart && result.locations.every(location => location.ready);
+    return result;
+  }
+  async function repeatSearchAction(message) {
+    if (message.confirmed !== true) throw new Error('Review and explicitly authorize another attempt first.');
+    if (!['email', 'autoApply'].includes(message.channel)) throw new Error('Choose a supported action.');
+    const library = await profileLibrary();
+    const saved = (await state()).searches.find(search => search.id === message.id);
+    if (!saved) throw new Error('Search not found.');
+    if (!saved.enabled || !saved.actions[message.channel]) throw new Error('Start this search with the requested action enabled before trying again.');
+    if (!saved.locationIds.includes(message.monitorId)) throw new Error('This location is not part of the search.');
+    const readiness = await readinessFor({...saved, actions: {[message.channel]: true}}, library);
+    if (!readiness.canStart) throw new Error(readiness.blockers.join(' '));
+    const entry = library.profiles.find(profile => profile.id === saved.profileId);
+    const snapshot = {id: entry.id, name: entry.name, details: validateProfile(entry.details)};
+    const job = await mutate(value => {
+      const search = value.searches.find(search => search.id === message.id);
+      if (!search?.enabled || search.generation !== saved.generation || !search.actions[message.channel]) throw new Error('Start this search with the requested action enabled before trying again.');
+      if (!search.locationIds.includes(message.monitorId)) throw new Error('This location is not part of the search.');
+      const monitor = find(value, message.monitorId);
+      const result = search.results?.[message.monitorId];
+      if (!result || !Number.isFinite(result.at) || monitor.error || now() - result.at > Math.max(60000, monitor.intervalSeconds * 3000)) throw new Error('Run a successful fresh location check before trying again.');
+      const listing = result.matches.find(item => item.matched && listingKey(item) === message.listingId);
+      if (!listing) throw new Error('This apartment no longer matches the search.');
+      const key = searchClaimKey(search.profileId, message.monitorId, message.listingId, message.channel);
+      const previous = value.searchClaims[key];
+      if (!previous || claimActionId(previous) !== message.expectedClaimId) throw new Error('The previous action changed. Review its latest outcome and try again.');
+      if (['queued', 'running'].includes(previous.status)) throw new Error('This action is already queued or running.');
+      const action = {id: crypto.randomUUID(), at: now(), monitorId: message.monitorId, listingId: listingKey(listing), listingName: listing.name || listing.context || 'Apartment', channel: message.channel, status: 'queued', message: 'Another attempt explicitly authorized.', repeatedFrom: claimActionId(previous)};
+      value.searchClaims[key] = {...action, searchId: search.id, attemptCount: (previous.attemptCount || 1) + 1,
+        previousAttempts: [{id: claimActionId(previous), at: previous.at || null, status: previous.status || 'recorded', message: previous.message || 'Previous attempt recorded.', tabId: previous.tabId || null}, ...(previous.previousAttempts || [])].slice(0, 10)};
+      search.activity.unshift(action);
+      return {previousClaim: structuredClone(previous), searchId: search.id, generation: search.generation, key, actionId: action.id, monitorId: message.monitorId, listing: structuredClone(listing), snapshot, channel: message.channel, createAccount: search.createAccount};
+    });
+    searchActions = searchActions.then(() => executeSearchAction(job)).catch(console.error);
+    return state();
+  }
+  async function matchSearches(monitorId, samples) {
+    const library = await profileLibrary();
+    const jobs = await mutate(value => {
+      const monitor = find(value, monitorId);
+      const jobs = [];
+      for (const search of (value.searches || []).filter(item => item.enabled && item.locationIds.includes(monitorId))) {
+        const entry = library.profiles.find(item => item.id === search.profileId);
+        if (!entry) { search.enabled = false; search.error = "The profile was deleted."; continue; }
+        const snapshot = {id: entry.id, name: entry.name, details: validateProfile(entry.details)};
+        const matches = evaluateRule(samples, monitor.rule, {clientPreferences: snapshot.details}).matches.map(sample => ({...sample, applicationUrl: safeListingUrl(sample.applicationUrl, monitor.url), pageUrl: safeListingUrl(sample.pageUrl, monitor.url) || monitor.url}));
+        search.results ||= {};
+        search.results[monitorId] = {at: now(), matches};
+        search.activity ||= [];
+        for (const listing of matches.filter(item => item.matched)) {
+          for (const channel of ['autoApply', 'email'].filter(channel => search.actions[channel])) {
+            // Permanent per-profile claims also deduplicate overlapping searches.
+            const key = searchClaimKey(entry.id, monitorId, listingKey(listing), channel);
+            if (value.searchClaims[key]) continue;
+            const action = {id: crypto.randomUUID(), at: now(), monitorId, listingId: listingKey(listing), listingName: listing.name || listing.context || 'Apartment', channel, status: 'queued', message: 'Waiting to run'};
+            value.searchClaims[key] = {...action, searchId: search.id};
+            search.activity.unshift(action);
+            jobs.push({generation: search.generation, key, searchId: search.id, actionId: action.id, monitorId, listing: structuredClone(listing), snapshot, channel, createAccount: search.createAccount});
+          }
+        }
+        search.activity = [...search.activity.filter(item => ['queued', 'running'].includes(item.status)), ...search.activity.filter(item => !['queued', 'running'].includes(item.status)).slice(0, 100)].sort((a, b) => b.at - a.at);
+      }
+      return jobs;
+    });
+    for (const job of jobs) searchActions = searchActions.then(() => executeSearchAction(job)).catch(console.error);
+  }
+  async function executeSearchAction(job) {
+    const {searchId, actionId, monitorId, listing, snapshot, channel} = job;
+    const update = (status, message, extra = {}) => mutate(value => {
+      const action = value.searches?.find(item => item.id === searchId)?.activity.find(item => item.id === actionId);
+      if (action) Object.assign(action, {status, message, ...extra});
+      if (claimActionId(value.searchClaims[job.key]) === actionId) Object.assign(value.searchClaims[job.key], {status, message, ...extra});
+    });
+    const cancelQueued = message => mutate(value => {
+      const action = value.searches?.find(item => item.id === searchId)?.activity.find(item => item.id === actionId);
+      if (action) Object.assign(action, {status: 'cancelled', message});
+      if (claimActionId(value.searchClaims[job.key]) === actionId) {
+        if (job.previousClaim) value.searchClaims[job.key] = job.previousClaim;
+        else delete value.searchClaims[job.key];
+      }
+    });
+    let search = (await state()).searches?.find(item => item.id === searchId);
+    if (!search?.enabled || search.generation !== job.generation || !search.actions[channel]) return cancelQueued('Search changed or paused before execution.');
+    if (!search.results?.[monitorId]?.matches.some(item => item.matched && listingKey(item) === listingKey(listing))) return cancelQueued('The listing no longer matches.');
+    const library = await profileLibrary();
+    if (!library.profiles.some(item => item.id === snapshot.id)) return cancelQueued('The profile was deleted.');
+    await update('running', channel === 'email' ? 'Sending to the profile holder…' : 'Starting application…');
+    try {
+      if (channel === 'autoApply') {
+        // Manual applications and automated searches never share an active run.
+        while (applications.has(monitorId)) {
+          await applications.get(monitorId).promise.catch(() => {});
+        }
+        search = (await state()).searches?.find(item => item.id === searchId);
+        if (!search?.enabled || search.generation !== job.generation) return cancelQueued('Search changed or paused before application started.');
+        if (!search.results?.[monitorId]?.matches.some(item => item.matched && listingKey(item) === listingKey(listing))) return cancelQueued('The apartment no longer matches before application start.');
+        const controller = new AbortController();
+        const run = {controller, searchId};
+        applications.set(monitorId, run);
+        run.promise = runApplication(monitorId, listing, controller.signal, snapshot.id, job.createAccount, {}, snapshot).finally(() => applications.delete(monitorId));
+        const result = await run.promise;
+        await update(result.kind === 'cancelled' ? 'cancelled' : result.kind === 'error' ? 'failed' : 'review', result.moveInMessage || 'Review the application tab.', {tabId: result.tabId});
+      } else {
+        const stateValue = await state();
+        search = stateValue.searches?.find(item => item.id === searchId);
+        if (!search?.enabled || search.generation !== job.generation) return cancelQueued('Search changed or paused before email delivery.');
+        const monitor = find(stateValue, monitorId);
+        const application = search.activity.find(item => item.monitorId === monitorId && item.channel === 'autoApply' && item.listingId === listingKey(listing));
+        const body = [`Hello ${snapshot.details.firstName || snapshot.name},`, '', `A matching apartment was found for ${search.name}.`, monitor.name, listing.name || listing.context || 'Apartment', listing.rent ? `Rent: ${listing.rent}` : '', listing.size ? `Size: ${listing.size}` : '', listing.applicationUrl || listing.pageUrl || monitor.url, application ? `Application: ${application.message}` : '', '', 'Availability may change. Review all application details on the housing website.'].filter(Boolean).join('\n');
+        await sendEmailAlert(api, {id: actionId}, `SpotAlert · ${listing.name || 'Matching apartment'}`, body, {to: snapshot.details.email});
+        await update('sent', `Email accepted by provider for ${snapshot.details.email}.`);
+      }
+    } catch (error) { await update('failed', error.message); }
   }
   async function captureApplications(id, generation, signal) {
     // Claim before opening, so repeated five-second checks cannot reopen a link.
@@ -706,94 +900,63 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     }
     if (work.length && !signal.aborted) await patchRun(id, generation, monitor => { monitor.phase = monitor.enabled ? "waiting" : "paused"; });
   }
-  async function deliverAlert(id, alert, soundOverride) {
-    const currentState = await state();
-    const monitor = find(currentState, id);
-    const desktop = alert.test || currentState.alertPreferences?.desktop !== false;
-    const sound = soundOverride === undefined ? monitor.sound : Boolean(soundOverride);
-    const notificationId = `${id}:${alert.id}`;
-    await mutate((value) => {
-      value.notificationTargets ||= {};
-      value.notificationTargets[notificationId] = {id, listing: alert.listings[0] || null};
-      const entries = Object.entries(value.notificationTargets).slice(-50);
-      value.notificationTargets = Object.fromEntries(entries);
-    });
-    const message = alert.listings.map((sample) => {
-      const link = safeListingUrl(sample.applicationUrl || sample.pageUrl, monitor.url) || monitor.url;
-      return `${sample.name || "Apartment"}${sample.rent ? ` · ${sample.rent}` : ""}
-${sample.context || sample.text}
-${link}`;
-    }).join("\n\n").slice(0, 1600) || "This is a test availability alert.";
-    const subject = `${alert.test ? "Test · " : ""}${monitor.name} · New availability`;
-    const channels = ["desktop", ...(sound ? ["sound"] : []), "email"];
-    const results = await Promise.allSettled([
-      desktop ? api.notifications.create(notificationId, {type: "basic", iconUrl: api.runtime.getURL("icons/128.png"), title: `${alert.test ? "Test · " : ""}${monitor.name} · ${alert.listings.length || 1} available`, message, silent: true}) : Promise.resolve({skipped: true}),
-      ...(sound ? [playAlertSound(api)] : []),
-      sendEmailAlert(api, alert, subject, message),
-    ]);
-    await mutate(value => {
-      value.deliveries ||= [];
-      results.forEach((result, index) => {
-        if (result.status === "fulfilled" && result.value?.skipped) return;
-        value.deliveries.unshift({id: crypto.randomUUID(), monitorId: id, site: monitor.name, channel: channels[index], at: now(), status: result.status === "fulfilled" ? "sent" : "failed", error: result.status === "rejected" ? result.reason.message : null, attempts: 1, alert, subject, message});
-      });
-      value.deliveries = value.deliveries.slice(0, 100);
-    });
-    const failures = results.map((result, index) => result.status === "rejected" ? `${index === 0 ? "Desktop notification" : sound && index === 1 ? "Alert sound" : "Email"} failed: ${result.reason.message}` : null).filter(Boolean);
-    for (const message of failures) await mutate((value) => history(find(value, id), {kind: "warning", message}));
-    return {email: results.at(-1).status === "fulfilled" && !results.at(-1).value?.skipped, desktop: desktop && results[0].status === "fulfilled", sound: sound ? results[1]?.status === "fulfilled" : false, errors: failures};
-  }
-  async function testAlert(id, sound) {
-    let alert;
-    await mutate((value) => {
-      const monitor = find(value, id);
-      const example = monitor.samples.find((sample) => sample.included !== false) || {id: "test", name: "Example apartment", rent: "Example rent", text: "Test notification", context: "This is a test; it does not indicate availability.", pageUrl: monitor.url};
-      alert = {id: crypto.randomUUID(), at: now(), test: true, listings: [example]};
-      monitor.alert = alert;
-      history(monitor, {kind: "test", message: "Test availability alert"});
-    });
-    return deliverAlert(id, alert, sound);
-  }
-  async function snooze(id, minutes) {
-    if (!Number.isFinite(minutes) || minutes < 0 || minutes > 1440) throw new Error("Choose a snooze duration between 0 and 1,440 minutes.");
-    await mutate((value) => {
-      const monitor = find(value, id);
-      monitor.snoozedUntil = minutes ? now() + minutes * 60000 : null;
-      history(monitor, {kind: "snooze", message: minutes ? `Alerts snoozed for ${minutes} minutes; monitoring continues.` : "Alerts resumed."});
-    });
-    return state();
-  }
-  async function openNotification(notificationId) {
-    const value = await state();
-    const target = value.notificationTargets?.[notificationId];
-    const id = target?.id || notificationId.split(":")[0];
-    if (target?.listing) {
-      const monitor = find(value, id);
-      const direct = safeListingUrl(target.listing.applicationUrl, monitor.url);
-      if (direct) return (await api.tabs.create({url: direct, active: true})).id;
-      // Preserve the target of an older notification even after newer alerts arrive.
-      const tab = await tabFor(monitor, new AbortController().signal);
-      await api.tabs.update(tab.id, {active: true});
-      await waitForPage(tab.id, new AbortController().signal, false);
-      await api.scripting.executeScript({target: {tabId: tab.id}, func: openApplication, args: [target.listing]});
-      return tab.id;
-    }
-    return open(id);
-  }
   async function dispatch(message) {
+    if (message.dashboardBuild && ['repeat-search-action', 'save-search', 'set-search-enabled', 'delete-search', 'prepare-application', 'fill-application', 'prepare-canvas-signature', 'open-listing', 'continue-application'].includes(message.type) && message.dashboardBuild !== APPLICATION_BUILD) throw new Error('SpotAlert versions do not match. Reload the extension at chrome://extensions and reopen the dashboard.');
     switch (message.type) {
-      case "set-alerts": {
-        if (typeof message.notify !== "boolean" || typeof message.sound !== "boolean") throw new Error("Choose valid notification settings.");
-        if ([message.popup, message.desktop].some(v => v !== undefined && typeof v !== "boolean")) throw new Error("Choose valid notification settings.");
+      case 'search-readiness': {
+        const search = (await state()).searches.find(search => search.id === message.id);
+        if (!search) throw new Error('Search not found.');
+        return readinessFor({...search, actions: message.actions || search.actions, createAccount: message.createAccount ?? search.createAccount});
+      }
+      case 'repeat-search-action': return repeatSearchAction(message);
+      case "save-search": {
+        const library = await profileLibrary();
+        const config = validateSearch(message.search || {}, library.profiles);
+        if (config.actions.email && !(await api.storage.local.get(EMAIL_KEY))[EMAIL_KEY]?.apiKey) throw new Error("Configure the Resend API key in Settings → Email delivery first.");
         await mutate(value => {
-          value.alertPreferences = {notify: message.notify, sound: message.sound, popup: message.popup ?? message.notify, desktop: message.desktop ?? message.notify};
-          for (const monitor of value.monitors) {
-            Object.assign(monitor, value.alertPreferences);
-            if (!monitor.notify) monitor.pendingArrivals = [];
-          }
+          const existing = value.searches.find(item => item.id === message.search.id);
+          if (message.search.id && !existing) throw new Error("Search not found.");
+          if (!existing && value.searches.length >= 100) throw new Error("You can save up to 100 searches.");
+          if (existing) Object.assign(existing, config, {enabled: false, generation: crypto.randomUUID(), results: {}, error: null});
+          else value.searches.push({...config, id: crypto.randomUUID(), generation: crypto.randomUUID(), enabled: false, results: {}, activity: []});
         });
+        for (const [id, run] of applications) if (run.searchId === message.search.id) await stopApplication(id);
+        await reconcileSearchLocations();
         return state();
       }
+      case "set-search-enabled": {
+        const value = await state();
+        const search = value.searches.find(item => item.id === message.id);
+        if (!search) throw new Error("Search not found.");
+        if (message.enabled && message.expectedGeneration && message.expectedGeneration !== search.generation) throw new Error('This search changed. Close the dialog and review the current search before starting.');
+        if (typeof message.enabled !== 'boolean') throw new Error("Choose a valid search status.");
+        let config = null;
+        if (message.enabled) {
+          const library = await profileLibrary();
+          config = validateSearch({...search, actions: message.actions || search.actions, createAccount: message.createAccount ?? search.createAccount}, library.profiles);
+          const readiness = await readinessFor({...search, ...config}, library);
+          if (!readiness.canStart) throw new Error(readiness.blockers.join(' '));
+        }
+        await mutate(value => {
+          const current = value.searches.find(item => item.id === message.id);
+          if (!current || current.generation !== search.generation) throw new Error('This search changed. Review it before starting or pausing.');
+          Object.assign(current, {...(config ? {actions: config.actions, createAccount: config.createAccount} : {}), enabled: message.enabled, error: null, generation: crypto.randomUUID()});
+        });
+        if (!message.enabled) for (const [id, run] of applications) if (run.searchId === message.id) await stopApplication(id);
+        await reconcileSearchLocations();
+        return state();
+      }
+      case "delete-search": {
+        await mutate(value => { value.searches = value.searches.filter(item => item.id !== message.id); });
+        for (const [id, run] of applications) if (run.searchId === message.id) await stopApplication(id);
+        await reconcileSearchLocations();
+        return state();
+      }
+      case 'set-alerts':
+      case 'test-alert':
+      case 'snooze':
+      case 'snooze-all':
+      case 'retry-delivery': throw new Error('Notifications are configured per profile search. Email delivery settings are in Settings.');
       case "set-debug": {
         if (typeof message.enabled !== "boolean") throw new Error("Choose whether debug capture is enabled.");
         if (!message.enabled) for (const controller of debugRuns.values()) controller.abort();
@@ -808,20 +971,7 @@ ${link}`;
         return {tabId: capture.tabId};
       }
       case "profile": return validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
-      case "assign-profile": {
-        const library = await profileLibrary();
-        if (message.profileId && !library.profiles.some(item => item.id === message.profileId)) throw new Error("Profile not found.");
-        await mutate(value => {
-          const monitor = find(value, message.id);
-          monitor.profileId = message.profileId || null;
-          const applicant = library.profiles.find(item => item.id === (monitor.profileId || library.activeId));
-          if (monitor.samples.length) {
-            const evaluated = evaluateRule(monitor.samples, monitor.rule, {...monitor.filters, clientPreferences: applicant.details});
-            monitor.samples = evaluated.matches; monitor.available = evaluated.available;
-          }
-        });
-        return state();
-      }
+      case 'assign-profile': throw new Error('Assign the profile to a saved search, not to a location.');
       case "profiles": return profileLibrary();
       case "profile-folder-status": return (await api.storage.local.get(FOLDER_KEY))[FOLDER_KEY] || {enabled: false};
       case "enable-profile-folder": {
@@ -859,45 +1009,76 @@ ${link}`;
       }
       case "clear-profile": {
         const library = await profileLibrary();
+        const deletedId = library.activeId;
+        await mutate(value => { for (const search of value.searches || []) if (search.profileId === deletedId) { search.enabled = false; search.error = 'The profile was deleted.'; search.generation = crypto.randomUUID(); } });
+        for (const [id, run] of applications) if (run.searchId && (await state()).searches.find(item => item.id === run.searchId)?.profileId === deletedId) await stopApplication(id);
         library.profiles = library.profiles.filter(item => item.id !== library.activeId);
         if (!library.profiles.length) library.profiles.push({id: "default", name: "My profile", details: {}});
         library.activeId = library.profiles[0].id;
         await saveLibrary(library);
+        await reconcileSearchLocations();
         return {cleared: true};
       }
       case "prepare-canvas-signature": {
         if (message.consent !== true) throw new Error('Explicitly choose the agreement and signature action first.');
-        const tab = await currentCanvasApplication(message.monitorId);
+        const tab = await currentApplicationTab(message.monitorId, true);
         const url = new URL(tab.url);
-        if (url.origin !== 'https://canvas-world.securerc.co.uk' || !/\/oleapplication\.aspx$/i.test(url.pathname) || url.searchParams.get('stepname')?.toLowerCase() !== 'intapplicantinfo') throw new Error('The selected tab is no longer the Canvas applicant information page.');
-        const results = await api.scripting.executeScript({target: {tabId: tab.id}, world: 'MAIN', func: prepareCanvasSignature, args: [message.screening === true]});
+        const config = pageConfig(siteForUrl(tab.url));
+        if (!config?.agreementSignature || !url.pathname.toLowerCase().endsWith('/' + config.paths.applicant) || url.searchParams.get('stepname')?.toLowerCase() !== config.agreementSignature.step) throw new Error('The selected tab is no longer the Canvas applicant information page.');
+        return withApplicationTab(tab.id, async () => {
+        const results = await api.scripting.executeScript({target: {tabId: tab.id}, world: 'MAIN', func: prepareCanvasSignature, args: [message.screening === true, config]});
         const result = results[0]?.result;
         if (result?.error) throw new Error(result.error);
         if (!result?.agreementChecked || !result?.signatureSelected) throw new Error('The website did not confirm both selections. Review the application tab.');
         if (message.screening === true && !result.screeningChecked) throw new Error('The website did not confirm the screening agreement.');
         return result;
+        });
       }
+      case "prepare-application":
       case "fill-application": {
-        await profileLibrary();
-    const profile = validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
+        const library = await profileLibrary();
+        const profile = validateProfile((await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY]);
         if (!Object.values(profile).some(Boolean)) throw new Error("Save your personal information first.");
-        const [activeTab] = await api.tabs.query({active: true, currentWindow: true});
-        const tab = message.canvasSignature === true ? await currentCanvasApplication(message.monitorId) : activeTab;
+        const tab = await currentApplicationTab(message.monitorId, message.canvasSignature === true);
         if (!tab?.url || !SUPPORTED_SITES.some(site => new URL(site.url).origin === new URL(tab.url).origin)) throw new Error("Open a supported housing application form in the active tab, then use SpotAlert’s side panel to fill it.");
-        const results = await api.scripting.executeScript({target: {tabId: tab.id}, world: "MAIN", func: fillApplicationForm, args: [profile]});
-        const result = results[0]?.result || {count: 0, fields: []};
+        const config = pageConfig(siteForUrl(tab.url));
+        return withApplicationTab(tab.id, async signal => {
+        const monitorId = siteForUrl(tab.url).id;
+        await applicationStatus(monitorId, {status: 'running', stage: 'filling', build: APPLICATION_BUILD, tabId: tab.id, trace: [], applicantName: library.profiles.find(item => item.id === library.activeId)?.name || 'Saved profile', listingName: 'Current application tab', listingId: null, moveInDate: null, missingFields: [], structure: null, message: 'Preparing the open application…'});
+        try {
+        if (signal.aborted) throw new Error('Application automation stopped.');
+        await api.scripting.executeScript({target: {tabId: tab.id}, func: () => { delete document.documentElement.dataset.spotalertApplicationStopped; }});
+        if (signal.aborted) throw new Error('Application automation stopped.');
+        const results = await api.scripting.executeScript({target: {tabId: tab.id}, world: "MAIN", func: fillApplicationForm, args: [profile, config]});
+        if (signal.aborted) throw new Error("Application automation stopped.");
+        let result = results[0]?.result || {count: 0, fields: []};
+        if (message.canvasSignature === true) {
+          const prepared = (await api.scripting.executeScript({target: {tabId: tab.id}, world: 'MAIN', func: prepareCanvasSignature, args: [true, config]}))[0]?.result;
+          if (prepared?.error || !prepared?.agreementChecked || !prepared?.signatureSelected || !prepared?.screeningChecked) throw new Error(prepared?.error || 'The website did not confirm the selected agreements and signature.');
+          result = {...result, ...prepared};
+        }
+        result.tabId = tab.id;
         if (profile.moveInFrom) {
+          if (signal.aborted) throw new Error('Application automation stopped.');
+          await applicationStatus(monitorId, {stage: 'selecting-date', message: 'Selecting the preferred move-in date…'});
           const dates = await api.scripting.executeScript({target: {tabId: tab.id}, func: selectMoveInDate, args: [profile]});
           const date = dates[0]?.result || {count: 0};
-          return {...result, ...date, count: result.count + date.count, fields: [...result.fields, ...(date.count ? ["moveInFrom"] : [])]};
+          result = {...result, ...date, count: result.count + date.count, fields: [...(result.fields || []), ...(date.count ? ['moveInFrom'] : [])]};
         }
+        if (signal.aborted) throw new Error('Application automation stopped.');
+        await applicationStatus(monitorId, {status: 'stopped', kind: 'review', tabId: tab.id, filled: result.count, message: result.message || 'Details filled. Review the application before saving.'});
         return result;
+        } catch (error) {
+          await applicationStatus(monitorId, {status: 'stopped', kind: signal.aborted ? 'cancelled' : 'error', tabId: tab.id, message: error.message});
+          throw error;
+        }
+        });
       }
       case "send-client-questionnaire": {
         const to = String(message.to || "").trim(), replyTo = String(message.replyTo || "").trim();
         if (![to, replyTo].every(address => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address))) throw new Error("Enter valid client and reply-to email addresses.");
         const name = String(message.name || "").trim().slice(0, 80);
-        return sendEmailAlert(api, {id: crypto.randomUUID()}, "Your apartment application details", clientQuestionnaire(name), true, {to, replyTo});
+        return sendEmailAlert(api, {id: crypto.randomUUID()}, "Your apartment application details", clientQuestionnaire(name), {to, replyTo});
       }
       case "import-client-profile": {
         const profile = parseClientReply(message.reply);
@@ -910,60 +1091,57 @@ ${link}`;
         await saveLibrary(library);
         return {saved: true};
       }
-      case "retry-delivery": {
-        const delivery = (await state()).deliveries?.find(item => item.id === message.deliveryId);
-        if (!delivery || delivery.status !== "failed") throw new Error("Only failed deliveries can be retried.");
-        if (deliveryRetries.has(delivery.id)) throw new Error("This delivery is already being retried.");
-        deliveryRetries.add(delivery.id);
-        let error = null;
-        try {
-          if (delivery.channel === "email") await sendEmailAlert(api, delivery.alert, delivery.subject, delivery.message, true);
-          else if (delivery.channel === "sound") await playAlertSound(api);
-          else await api.notifications.create(`${delivery.monitorId}:${delivery.alert.id}`, {type: "basic", iconUrl: api.runtime.getURL("icons/128.png"), title: delivery.site, message: delivery.message, silent: true});
-        } catch (failure) { error = failure.message; }
-        await mutate(value => {
-          const row = value.deliveries.find(item => item.id === delivery.id);
-          Object.assign(row, {status: error ? "failed" : "sent", error, at: now(), attempts: row.attempts + 1});
-        });
-        deliveryRetries.delete(delivery.id);
-        if (error) throw new Error(error);
-        return {sent: true};
+      case 'test-email': {
+        const profile = (await profileLibrary()).profiles.find(profile => profile.id === message.profileId);
+        if (!profile?.details.email) throw new Error('Select a saved profile with an email address for the test.');
+        return sendEmailAlert(api, {id: crypto.randomUUID()}, 'SpotAlert · Test email', 'SpotAlert email delivery test.', {to: profile.details.email});
       }
-      case "test-email": {
-        const alert = {id: crypto.randomUUID()};
-        return sendEmailAlert(api, alert, "SpotAlert · Test email", "Your SpotAlert Resend connection works. This is a test, not an availability alert.", true);
+      case "engine-info": return {build: APPLICATION_BUILD, version: api.runtime.getManifest?.().version || 'development'};
+      case "open-application-target": {
+        const tab = await api.tabs.get(message.tabId);
+        if (!siteForUrl(tab.url)) throw new Error('The application tab is no longer on a supported website.');
+        await api.tabs.update(tab.id, {active: true});
+        return {tabId: tab.id};
       }
       case "state": return state();
-      case "save": return {id: await save(message.monitor)};
+      case "save": {
+        const id = await save(message.monitor);
+        await reconcileSearchLocations();
+        return {id};
+      }
       case "start": await setEnabled(message.id, true); return state();
       case "stop-all": return stopAll();
-      case "pause": await setEnabled(message.id, false); return state();
+      case "pause":
+        if ((await state()).searches?.some(search => search.enabled && search.locationIds.includes(message.id))) throw new Error("Pause the searches using this location first, or use Stop all.");
+        await setEnabled(message.id, false); return state();
       case "check": await check(message.id); return state();
       case "set-interval": return setIntervalSeconds(message.id, message.intervalSeconds);
       case "preview": return preview(message.monitor);
       case "open": return {tabId: await open(message.id)};
       case "open-affected": return {tabId: await openAffected(message.id)};
       case "open-listing": {
-        const result = await openListing(message.id, message.listingId, false, message.profileId, message.createAccount === true, {enabled: message.signatureConsent === true, screening: message.screening === true});
+        const result = await openListing(message.id, message.listingId, message.profileId, message.createAccount === true, {enabled: message.signatureConsent === true, screening: message.screening === true});
         return typeof result === "number" ? {tabId: result} : result;
       }
-      case "continue-application": return openListing(message.id, null, true);
+      case "continue-application": throw new Error("Applications run in one pass. Use Apply on an apartment to start a new run.");
       case "open-application-tab": {
         const app = find(await state(), message.id).application;
         if (!app?.tabId) throw new Error("No application tab has been opened.");
-        await api.tabs.update(app.tabId, {active: true});
+        try { await api.tabs.update(app.tabId, {active: true}); }
+        catch (error) {
+          if (/No tab with id|Invalid tab ID|tab.*closed/i.test(error.message)) {
+            const messageText = "The application tab was closed. Use Apply on the apartment to start a new run.";
+            await applicationStatus(message.id, {status: "stopped", kind: "error", tabId: null, message: messageText});
+            throw new Error(messageText);
+          }
+          throw error;
+        }
         return {tabId: app.tabId};
       }
       case "stop-application": {
         await stopApplication(message.id);
         return {stopped: true};
       }
-      case "open-notification": return {tabId: await openNotification(message.notificationId)};
-      case "snooze-all":
-        for (const monitor of (await state()).monitors) await snooze(monitor.id, Number(message.minutes));
-        return state();
-      case "snooze": return snooze(message.id, Number(message.minutes));
-      case "test-alert": return testAlert(message.id, message.sound);
       default: throw new Error("Unknown SpotAlert command.");
     }
   }

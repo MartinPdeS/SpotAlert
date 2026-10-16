@@ -1,4 +1,4 @@
-"""Verify apartment filters, per-listing alerts, audio and recovery in Chromium."""
+"""Verify location filters, monitoring schedules, profile editing and recovery in Chromium."""
 
 import json
 import shutil
@@ -67,12 +67,15 @@ def main():
         shutil.copytree(ROOT / "SpotAlert/chrome_extension", extension)
         with sync_playwright() as playwright:
             def launch():
-                return playwright.chromium.launch_persistent_context(
+                browser_context = playwright.chromium.launch_persistent_context(
                     str(temporary / "profile"), channel="chromium", headless=True,
                     viewport={"width": 1000, "height": 1000},
-                    args=[f"--disable-extensions-except={extension}", f"--load-extension={extension}"],
+                    args=["--disable-features=DisableLoadExtensionCommandLineSwitch", f"--disable-extensions-except={extension}", f"--load-extension={extension}"],
                     ignore_default_args=["--disable-extensions"],
                 )
+                worker = browser_context.service_workers[0] if browser_context.service_workers else browser_context.wait_for_event("serviceworker")
+                worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profiles disabled in isolated tests');};}")
+                return browser_context
 
             context = launch()
             errors = []
@@ -89,9 +92,7 @@ def main():
                 panel.goto(f"chrome-extension://{extension_id}/panel.html")
 
                 def dismiss():
-                    if panel.locator("#availability-popup").is_visible():
-                        panel.locator("#dismiss-availability").click()
-                    expect(panel.locator("#availability-popup")).not_to_be_visible()
+                    expect(panel.locator("#availability-popup")).to_have_count(0)
 
                 def check():
                     before = int(panel.locator("#check-count").inner_text())
@@ -112,23 +113,15 @@ def main():
                 expect(panel.locator("#check-count")).to_have_text("1", timeout=30000)
                 state["a"] = True
                 check()
-                expect(panel.locator("#availability-popup")).to_be_visible()
-                expect(panel.locator("#availability-listings")).to_contain_text("Superior Studio A")
-                expect(panel.locator("#availability-listings")).to_contain_text("€ 1.050")
-                expect(panel.locator("#availability-listings").get_by_role("button", name="Apply")).to_be_visible()
-                with context.expect_page() as application:
-                    panel.locator("#availability-listings").get_by_role("button", name="Apply").click()
-                expect(application.value.locator("h1")).to_have_text("Application page")
+                expect(panel.locator("#availability-popup")).to_have_count(0)
                 dismiss()
                 state["b"] = True
                 check()
-                expect(panel.locator("#availability-listings")).to_contain_text("1 Bedroom B")
-                expect(panel.locator("#availability-listings")).not_to_contain_text("Superior Studio A")
                 panel.screenshot(path=str(ARTIFACTS / "listing-alert.png"))
                 dismiss()
                 state["reverse"] = True
                 check()
-                expect(panel.locator("#availability-popup")).not_to_be_visible()
+                expect(panel.locator("#availability-popup")).to_have_count(0)
                 edit()
                 panel.locator('[name="apartment-type"][value="studio"]').check()
                 panel.locator('[name="floorplan"][value="floorplan:101"]').check()
@@ -137,8 +130,6 @@ def main():
                 save()
                 panel.get_by_role("button", name="▶ Start watching", exact=True).click()
                 expect(panel.locator("#check-count")).to_have_text("5", timeout=30000)
-                expect(panel.locator("#availability-listings")).to_contain_text("Superior Studio A")
-                expect(panel.locator("#availability-listings")).not_to_contain_text("1 Bedroom B")
                 dismiss()
                 expect(panel.locator(".sample").filter(has_text="1 Bedroom B")).to_contain_text("Filtered out")
                 expect(panel.locator(".sample").first).to_contain_text("Superior Studio A")
@@ -147,21 +138,6 @@ def main():
                 expect(panel.locator(".sample")).to_contain_text("Superior Studio A")
                 panel.get_by_role("button", name="All", exact=True).click()
                 edit()
-                panel.locator("#alert-sound").check()
-                panel.locator("#editor-test-alert").click()
-                expect(panel.locator("#availability-title")).to_have_text("Test notification")
-                expect(panel.locator("#editor-test-alert")).to_be_enabled(timeout=15000)
-                # The real offscreen document must be able to play audio.
-                panel.wait_for_function("async () => (await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT']})).length === 1")
-                sound = worker.evaluate("async () => chrome.runtime.sendMessage({target:'audio',type:'play-sound'})")
-                assert sound.get("ok"), sound
-                dismiss()
-                save()
-                stored = worker.evaluate("async () => (await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors[0]")
-                assert stored["sound"] is True
-                assert stored["filters"] == {"types": ["studio"], "floorplans": ["floorplan:101"]}
-                edit()
-                panel.locator("#alert-sound").uncheck()
                 panel.locator('[name="apartment-type"][value="studio"]').uncheck()
                 panel.locator('[name="floorplan"][value="floorplan:101"]').uncheck()
                 save()
@@ -189,17 +165,17 @@ def main():
                 dismiss()
                 state["mode"] = "verification"
                 panel.get_by_role("button", name="↻ Check now", exact=True).click()
-                expect(panel.locator(".activity-caption")).to_have_text("Verification required", timeout=30000)
-                expect(panel.locator(".error-box")).to_contain_text("OurDomain · Amsterdam Diemen")
+                expect(panel.locator(".attention-monitor")).to_contain_text("verification", timeout=30000)
+                expect(panel.locator(".attention-monitor")).to_contain_text("OurDomain · Amsterdam Diemen")
                 affected_id = worker.evaluate("async () => (await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors[0].tabId")
                 panel.get_by_role("button", name="Open affected tab ↗", exact=True).click()
                 assert worker.evaluate("async id => (await chrome.tabs.get(id)).active", affected_id)
                 state["mode"] = "login"
                 panel.get_by_role("button", name="↻ Check now", exact=True).click()
-                expect(panel.locator(".activity-caption")).to_have_text("Sign in required", timeout=30000)
+                expect(panel.locator(".attention-monitor")).to_contain_text("sign in", timeout=30000)
                 state["mode"] = "normal"
                 check()
-                expect(panel.locator(".error-box")).to_have_count(0)
+                expect(panel.locator(".attention-monitor")).to_have_count(0)
                 edit()
                 panel.locator("#rule-selector").fill("[")
                 panel.locator("#preview-rule").click()
@@ -213,26 +189,7 @@ def main():
                     panel.locator(f"#personal-{field}").fill(value)
                 panel.get_by_role("button", name="Save personal information", exact=True).click()
                 expect(panel.locator("#personal-view")).to_be_visible()
-                expect(panel.locator("#application-readiness")).to_contain_text("details prepared")
-                application_page = context.new_page()
-                application_page.goto(URL.replace("floorplans.aspx", "availableunits.aspx?myFloorPlanId=101"))
-                application_id = worker.evaluate("async () => (await chrome.tabs.query({})).find(tab => tab.url.includes('availableunits.aspx')).id")
-                worker.evaluate("async id => chrome.tabs.update(id,{active:true})", application_id)
-                # There may already be an application tab from the earlier link test.
-                application_page = next(page for page in context.pages if page.url == URL.replace("floorplans.aspx", "availableunits.aspx?myFloorPlanId=101"))
-                panel.get_by_role("button", name="Fill application form", exact=True).click()
-                expect(application_page.locator("#given")).to_have_value("Alex")
-                expect(application_page.locator("#surname")).to_have_value("Example")
-                expect(application_page.locator("#mail")).to_have_value("existing@example.com")
-                expect(application_page.locator("#phone")).to_have_value("+31612345678")
-                expect(application_page.locator("#city")).to_have_value("Amsterdam")
-                for selector in ["#confirm", "#secret", "#hidden-name", "#readonly", "#disabled"]:
-                    expect(application_page.locator(selector)).to_have_value("")
-                expect(application_page.locator("#consent")).not_to_be_checked()
-                assert application_page.evaluate("window.submitted !== true && window.events === 6")
-                panel.get_by_role("button", name="Fill application form", exact=True).click()
-                expect(panel.locator("#toast")).to_contain_text("No empty matching fields")
-                assert application_page.evaluate("window.events === 6")
+                expect(panel.locator("#application-readiness")).to_have_text("Missing details")
                 panel.get_by_role("tab", name="Personal information", exact=True).click()
                 panel.locator("#personal-firstName").fill("Unsaved name")
                 worker.evaluate("async () => { const key = 'spotalert.ui.v1'; await chrome.storage.local.set({[key]: {compact: true}}); }")
@@ -286,21 +243,21 @@ def main():
                 edit()
                 expect(panel.locator("#hours-enabled")).to_be_checked()
                 expect(panel.locator("#hours-timezone")).to_have_value("UTC")
-                expect(panel.locator("#alert-sound")).not_to_be_checked()
                 panel.locator("#close-editor").click()
                 expect(panel.locator("#active-count")).to_have_text("0")
                 panel.get_by_role("tab", name="Personal information", exact=True).click()
                 expect(panel.locator("#personal-firstName")).to_have_value("Alex")
                 expect(panel.locator("#personal-email")).to_have_value("alex@example.com")
-                panel.get_by_role("button", name="Delete saved details", exact=True).click()
+                panel.locator(".profile-tools > summary").click()
+                panel.get_by_role("button", name="Delete profile", exact=True).click()
                 expect(panel.locator("#personal-firstName")).to_have_value("")
-                expect(panel.locator("#application-readiness")).to_contain_text("0/")
+                expect(panel.locator("#application-readiness")).to_have_text("Awaiting information")
                 panel.get_by_role("tab", name="Monitoring", exact=True).click()
                 panel.get_by_role("tab", name="Personal information", exact=True).click()
                 expect(panel.locator("#personal-email")).to_have_value("")
             finally:
                 context.close()
-    print("Feature browser test passed: filters, individual arrivals, application links, test alerts, offscreen sound, snooze, monitoring hours, verification/login recovery, personal information, form filling without submission, debug capture/export, and persistence.")
+    print("Feature browser test passed: location filters, monitoring hours, verification/login recovery, profile editing, debug capture/export, and persistence; no Monitoring alerts.")
 
 
 if __name__ == "__main__":

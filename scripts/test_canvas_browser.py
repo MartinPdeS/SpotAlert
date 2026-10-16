@@ -55,9 +55,10 @@ def main():
             expect(panel.locator('.sample')).to_have_count(2)
             expect(panel.locator('.sample').filter(has_text='1 Bedroom Executive')).to_contain_text('Available')
             expect(panel.locator('.sample').filter(has_text='Standard Studio')).to_contain_text('Not available')
-            worker.evaluate("async () => chrome.storage.local.set({'spotalert.application-profile.v1':{moveInFrom:'2026-10-24',firstName:'Alex',lastName:'Example',address:'Home street 1',emergencyPhone:'+31687654321'}})")
+            panel.evaluate("async () => chrome.runtime.sendMessage({type:'save-profile',profile:{moveInFrom:'2026-10-24',firstName:'Alex',lastName:'Example',address:'Home street 1',emergencyPhone:'+31687654321'}})")
             with context.expect_page() as opened:
                 panel.locator('.sample').filter(has_text='1 Bedroom Executive').get_by_role('button', name='Apply').click()
+                panel.locator('#confirm-apply').click()
             destination = opened.value
             expect(destination).to_have_url(__import__('re').compile('termsandotheritems.aspx'), timeout=30000)
             expect(destination.locator('#sMoveInDate')).to_have_value('26-10-2026', timeout=30000)
@@ -68,9 +69,10 @@ def main():
             expect(destination.locator('#ProspectEmail')).to_have_value('existing@example.com')
             expect(destination.locator('#chkAgreement')).not_to_be_checked()
             assert destination.locator('body').get_attribute('data-submitted') is None
-            worker.evaluate("async () => chrome.storage.local.set({'spotalert.application-profile.v1':{}})")
+            panel.evaluate("async () => chrome.runtime.sendMessage({type:'clear-profile'})")
             with context.expect_page() as earliest:
                 panel.locator('.sample').filter(has_text='1 Bedroom Executive').get_by_role('button', name='Apply').click()
+                panel.locator('#confirm-apply').click()
             expect(earliest.value.locator('#sMoveInDate')).to_have_value('19-10-2026', timeout=30000)
             expect(earliest.value).to_have_url(__import__('re').compile('oleapplication.aspx'), timeout=30000)
             expect(earliest.value.locator('#ProspectFirstName')).to_have_value('')

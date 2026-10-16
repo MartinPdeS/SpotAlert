@@ -1,11 +1,10 @@
 export const EMAIL_KEY = "spotalert.resend.v1";
 export const CONTACT_KEY = "spotalert.notification-destinations.v1";
-export async function sendEmailAlert(api, alert, subject, body, force = false, delivery = null) {
-  const settings = await api.storage.local.get([EMAIL_KEY, CONTACT_KEY]);
+export async function sendEmailAlert(api, alert, subject, body, delivery = null) {
+  const settings = await api.storage.local.get(EMAIL_KEY);
   const email = settings[EMAIL_KEY] || {};
-  if (!force && !email.enabled) return {skipped: true};
-  const to = delivery?.to || settings[CONTACT_KEY]?.email?.trim();
-  if (!email.apiKey || !to) throw new Error("Save an email destination and Resend API key in Notifications.");
+  const to = delivery?.to?.trim();
+  if (!email.apiKey || !to) throw new Error("Select a profile email recipient and configure the Resend API key in Settings.");
   let response;
   try {
     response = await fetch("https://api.resend.com/emails", {
@@ -18,7 +17,7 @@ export async function sendEmailAlert(api, alert, subject, body, force = false, d
   try { result = await response.json(); } catch { throw new Error("Resend returned an unreadable response. Try again later."); }
   if (!response.ok) {
     const errors = {
-      401: "Resend rejected the API key. Check it in Notifications.",
+      401: "Resend rejected the API key. Check it in Settings → Email delivery.",
       403: "Resend rejected the sender or recipient. The test sender can only email your Resend account address; other recipients require a verified domain.",
       422: "Resend rejected the email. Check the sender and recipient addresses.",
       429: "Resend sending limit reached. Try again later.",

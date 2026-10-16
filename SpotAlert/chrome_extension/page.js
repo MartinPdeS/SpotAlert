@@ -1,5 +1,5 @@
 /** Self-contained functions injected into the selected page's isolated world. */
-export async function readPage(rule, waitMs = 12000) {
+export async function readPage(rule, waitMs = 12000, reader = {}) {
   const deadline = Date.now() + waitMs;
   let lastCount = 0;
   do {
@@ -14,13 +14,8 @@ export async function readPage(rule, waitMs = 12000) {
       }
       const elements = rule.type === "text" ? [document.body].filter(Boolean)
         : [...document.querySelectorAll(rule.selector)];
-      // South East collapses floor-plan sections and repeats them for mobile.
-      // Its application-button labels remain meaningful even while collapsed.
-      const applicationButtons = rule.type === "css"
-        && [
-          'td[data-selenium-id^="Apply_"] [data-selenium-id="ApplyNow"]',
-          'td[data-selenium-id^="Apply_"] [data-selenium-id="ApplyNow"], td[data-selenium-id^="Availability_"]',
-        ].includes(rule.selector);
+      // Site configuration identifies meaningful controls in collapsed plans.
+      const applicationButtons = rule.type === 'css' && reader.includeCollapsed === true;
       let visible = elements.filter((element) => applicationButtons || element.getClientRects().length > 0);
       if (applicationButtons) {
         const listings = new Map();

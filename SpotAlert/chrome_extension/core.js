@@ -1,19 +1,9 @@
 import {preferenceMatch} from "./preferences.js";
 /** Shared, browser-independent rule validation and evaluation. */
-export const OURDOMAIN = "https://thisisourdomain.securerc.co.uk";
-export const DEFAULT_URL = `${OURDOMAIN}/onlineleasing/ourdomain-amsterdam-diemen2/floorplans.aspx`;
-export const SUPPORTED_SITES = [{
-  id: "ourdomain-amsterdam-diemen", name: "OurDomain · Amsterdam Diemen", url: DEFAULT_URL,
-  rule: {type: "css", selector: 'td[data-selenium-id^="Availability_"]', mode: "not_equals", expected: "Get Notified"},
-}, {
-  id: "ourdomain-amsterdam-south-east", name: "OurDomain · Amsterdam South East",
-  url: "https://southeast-thisisourdomain.securerc.co.uk/onlineleasing/ourdomain-amsterdam-south-east/floorplans.aspx",
-  rule: {type: "css", selector: 'td[data-selenium-id^="Apply_"] [data-selenium-id="ApplyNow"]', mode: "not_equals", expected: "Get Notified"},
-}, {
-  id: "canvas-rotterdam-blaak", name: "Canvas · Rotterdam Blaak",
-  url: "https://canvas-world.securerc.co.uk/onlineleasing/andre-van-der-louwbrug-4-rotterdam-3011-wm/floorplans.aspx",
-  rule: {type: "css", selector: 'td[data-selenium-id^="Apply_"] [data-selenium-id="ApplyNow"], td[data-selenium-id^="Availability_"]', mode: "contains", expected: "Check availability"},
-}];
+import {SUPPORTED_SITES} from './sites/index.js';
+export {SUPPORTED_SITES} from './sites/index.js';
+export const DEFAULT_URL = SUPPORTED_SITES[0].url;
+export const OURDOMAIN = new URL(DEFAULT_URL).origin;
 export function supportedSite(url) {
   const parsed = new URL(url);
   parsed.hash = "";

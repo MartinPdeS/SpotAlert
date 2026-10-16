@@ -20,6 +20,8 @@ def main():
                 worker.evaluate('new Promise(resolve=>setTimeout(resolve,100))')
                 sites = worker.evaluate("async () => (await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2']?.monitors?.map(m=>({id:m.id,name:m.name,url:m.url}))||[]")
 
+            canvas_form = 'missing'
+
             def portal(route):
                 url = route.request.url
                 host = urlparse(url).hostname
@@ -58,10 +60,17 @@ def main():
                       }});
                       jQuery.fn={valid:()=>true};
                     </script>"""
+                elif 'stepname=newstep' in url:
+                    body = '<label for="custom">Custom question</label><input id="custom" required value="private-answer"><button>Continue</button>'
                 elif 'stepname=intapplicantinfo' in url:
                     body = '<input id="ProspectFirstName" required><input id="ProspectLastName" required>'
                     if host.startswith('canvas'):
                         body += '<label for="NationalityLEASEBUT_REQINFO4">Nationality</label><input id="NationalityLEASEBUT_REQINFO4" required>'
+                    if host.startswith('canvas') and canvas_form == 'documents':
+                        body = body.replace('id="NationalityLEASEBUT_REQINFO4" required', 'id="NationalityLEASEBUT_REQINFO4" required value="French"')
+                    if host.startswith('canvas') and canvas_form == 'unknown':
+                        route.fulfill(body="<script>location.href='oleapplication.aspx?stepname=newstep&token=private-token'</script>", content_type='text/html')
+                        return
                     body += '<button onclick="window.name=document.querySelector(\'#ProspectFirstName\').value;location.href=\'oleapplication.aspx?stepname=additionalapplicants\'">Next</button>'
                 elif 'stepname=additionalapplicants' in url:
                     if host.startswith('canvas'):
@@ -75,7 +84,7 @@ def main():
             context.route('https://*.securerc.co.uk/**', portal)
             profile_data = {'firstName':'Alex', 'lastName':'Example', 'email':'alex@example.com', 'phone':'+31612345678', 'dateOfBirth':'1995-03-04', 'registrationPassword':'TestPassword123!'}
             worker.evaluate("async profile => {const key='spotalert.monitors.v2';const s=(await chrome.storage.local.get(key))[key];for(const m of s.monitors){m.samples=[{id:'floorplan:101',floorplanId:'101',index:1,name:'Test studio',text:'Check availability',matched:true,applicationUrl:m.url.replace('floorplans.aspx','availableunits.aspx?myFloorPlanId=101')}];m.available=true;}await chrome.storage.local.set({[key]:s,'spotalert.application-profile.v1':profile});}", profile_data)
-            worker.evaluate("async profile=>{const sam={...profile,firstName:'Sam',email:'sam@example.com'};const k='spotalert.monitors.v2';const s=(await chrome.storage.local.get(k))[k];s.monitors[0].profileId='sam';await chrome.storage.local.set({[k]:s,'spotalert.application-profiles.v1':{activeId:'default',profiles:[{id:'default',name:'Alex',details:profile},{id:'sam',name:'Sam client',details:sam}]}});}", profile_data)
+            worker.evaluate("async profile=>{const sam={...profile,firstName:'Sam',email:'sam@example.com'};const k='spotalert.monitors.v2';const s=(await chrome.storage.local.get(k))[k];s.monitors[0].profileId='default';await chrome.storage.local.set({[k]:s,'spotalert.application-profiles.v1':{activeId:'default',profiles:[{id:'default',name:'Alex',details:profile},{id:'sam',name:'Sam client',details:sam}]}});}", profile_data)
             panel = context.new_page()
             panel.goto(worker.url.replace('background.js','panel.html'))
             for site in sites:
@@ -83,6 +92,8 @@ def main():
                 with context.expect_page() as opened:
                     panel.locator('.sample').get_by_role('button', name='Apply').click()
                     expect(panel.locator('#apply-confirmation')).to_be_visible()
+                    expect(panel.locator('#confirm-apply')).to_be_disabled()
+                    panel.locator('#apply-profile').select_option('sam' if site['id'].startswith('ourdomain-amsterdam-diemen') else 'default')
                     expect(panel.locator('#apply-confirmation-details')).to_contain_text('Sam client' if site['id'].startswith('ourdomain-amsterdam-diemen') else 'Alex')
                     panel.get_by_role('button', name='Confirm and apply', exact=True).click()
                 destination = opened.value
@@ -96,10 +107,15 @@ def main():
                 expect(panel.get_by_role('button', name='Continue application', exact=True)).to_have_count(0)
                 assert destination.evaluate("sessionStorage.getItem('dateChanges')") == '1', application
                 assert destination.evaluate("sessionStorage.getItem('startClicks')") == ('2' if site['id'].startswith('canvas') else '1'), application
-                assert application['build'] == '2026.10.12.3', application
+                assert application['build'] == panel.evaluate("async () => (await import('./application-diagnostics.js')).APPLICATION_BUILD"), application
                 assert any(event['event'] == 'booking-click-result' and event['started'] and event['dateMatches'] for event in application['trace']), application
                 assert application['trace'][-1]['event'] == 'stopped', application
+                assert worker.evaluate("async ()=>(await chrome.storage.local.get('spotalert.application-profiles.v1'))['spotalert.application-profiles.v1'].activeId") == 'default'
+                if site['id'].startswith('ourdomain-amsterdam-diemen'):
+                    assert worker.evaluate("async id=>(await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors.find(m=>m.id===id).profileId",site['id']) == 'default'
                 expect(panel.locator('.application-diagnostics')).to_have_count(1)
+                expect(panel.locator('.application-progress')).to_have_count(0)
+                panel.locator('.application-diagnostics > summary').click()
                 if site['id'].startswith('canvas'):
                     assert any(event['event'] == 'booking-retry-result' and event['started'] for event in application['trace']), application
                 if site['id'].startswith('ourdomain-amsterdam-diemen'):
@@ -107,31 +123,42 @@ def main():
                     expect(panel.locator('.move-in-feedback')).to_contain_text('19-10-2026')
                     assert destination.evaluate('window.name') == 'Sam'
                     assert destination.locator('body').get_attribute('data-paid') is None
-                    expect(panel.locator('.application-progress')).to_have_count(0)
+                    expect(panel.locator('.application-diagnostics').filter(has_text='Review this step yourself')).to_have_count(1)
                 elif site['id'].startswith('ourdomain-amsterdam-south-east'):
                     assert destination.evaluate("sessionStorage.getItem('phoneWidgetSet')") == '1', application
                     assert destination.evaluate("sessionStorage.getItem('accountCreated')") == '1'
                     expect(destination).to_have_url(__import__('re').compile('ApplicationCharges'))
                     assert destination.locator('body').get_attribute('data-paid') is None
-                    expect(panel.locator('.application-progress')).to_have_count(0)
+                    expect(panel.locator('.application-diagnostics').filter(has_text='Review this step yourself')).to_have_count(1)
                 else:
                     expect(destination.locator('#ProspectFirstName')).to_have_value('Alex')
-                    expect(panel.locator('.application-progress')).to_contain_text('Nationality')
+                    expect(panel.locator('.application-diagnostics')).to_contain_text('Nationality')
                     expect(panel.locator('.application-missing')).to_contain_text('Nationality')
-                    destination.locator('#NationalityLEASEBUT_REQINFO4').fill('French')
-                    panel.evaluate("async id=>chrome.runtime.sendMessage({type:'continue-application',id})", site['id'])
-                    expect(panel.locator('.application-progress')).to_have_count(0)
-                    assert destination.locator('body').get_attribute('data-uploaded') is None
-                    destination.goto(site['url'].replace('floorplans.aspx', 'oleapplication.aspx?stepname=newstep&token=private-token'))
-                    destination.set_content('<label for="custom">Custom question</label><input id="custom" required value="private-answer"><button>Continue</button>')
-                    panel.evaluate("async id=>chrome.runtime.sendMessage({type:'continue-application',id})", site['id'])
-                    expect(panel.locator('.application-progress')).to_contain_text('This form is unfamiliar', timeout=30000)
+                    expect(panel.get_by_role('button', name='Retry application', exact=True)).to_have_count(0)
+                    rejected = panel.evaluate("async id=>chrome.runtime.sendMessage({type:'continue-application',id})", site['id'])
+                    assert rejected['ok'] is False and 'one pass' in rejected['error']
+                    canvas_form = 'documents'
+                    with context.expect_page() as fresh:
+                        panel.evaluate("async id=>chrome.runtime.sendMessage({type:'open-listing',id,listingId:'floorplan:101'})", site['id'])
+                    expect(panel.locator('.application-diagnostics')).to_contain_text('Upload the requested documents')
+                    assert fresh.value.locator('body').get_attribute('data-uploaded') is None
+                    assert fresh.value != destination
+                    canvas_form = 'unknown'
+                    with context.expect_page():
+                        panel.evaluate("async id=>chrome.runtime.sendMessage({type:'open-listing',id,listingId:'floorplan:101'})", site['id'])
+                    expect(panel.locator('.application-diagnostics')).to_contain_text('This form is unfamiliar', timeout=30000)
                     expect(panel.locator('.application-structure')).to_contain_text('Custom question')
                     with panel.expect_download() as download:
                         panel.get_by_role('button', name='Download form structure', exact=True).click()
                     report = Path(download.value.path()).read_text()
                     assert 'Custom question' in report
                     assert 'private-answer' not in report and 'private-token' not in report
+                    worker.evaluate("async id=>{const s=(await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'];await chrome.tabs.remove(s.monitors.find(m=>m.id===id).application.tabId);}", site['id'])
+                    closed = panel.evaluate("async id=>chrome.runtime.sendMessage({type:'open-application-tab',id})", site['id'])
+                    assert closed['ok'] is False and 'tab was closed' in closed['error']
+                    expect(panel.locator('.application-diagnostics')).to_contain_text('Use Apply')
+                    expect(panel.locator('.application-diagnostics').get_by_role('button', name='Open application', exact=True)).to_have_count(0)
+
 
             worker.evaluate("async()=>{await chrome.storage.local.set({'spotalert.resend.v1':{enabled:true,apiKey:'re_fake'},'spotalert.notification-destinations.v1':{email:'alerts@example.com'}});globalThis.fetch=async()=>({ok:false,status:429,json:async()=>({})});chrome.notifications.create=async()=> 'mock';}")
             panel.evaluate("async id=>chrome.runtime.sendMessage({type:'test-alert',id,sound:false})", sites[0]['id'])
@@ -185,7 +212,7 @@ def main():
             assert worker.evaluate("async()=>!(await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors.some(m=>JSON.stringify(m.application).includes('TestPassword'))")
         finally:
             context.close()
-    print('Application flow passed for all sites: booking/date, autofill, Next, missing fields, resume, registration/documents/payment stops, and private status.')
+    print('Application flow passed for all sites: booking/date, autofill, Next, missing fields, fresh runs without resume, registration/documents/payment stops, and private status.')
 
 
 if __name__ == '__main__':

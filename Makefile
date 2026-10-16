@@ -48,6 +48,9 @@ extension-test:
 extension-browser-test:
 	$(PYTHON) scripts/test_extension_browser.py
 	$(PYTHON) scripts/test_extension_features.py
+	$(PYTHON) scripts/test_searches_browser.py
+	$(PYTHON) scripts/test_email_browser.py
+	$(PYTHON) scripts/test_panel_browser.py
 
 check: quality test extension-test
 

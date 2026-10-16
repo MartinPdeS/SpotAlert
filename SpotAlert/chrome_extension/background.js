@@ -15,7 +15,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (!sender.url?.startsWith(chrome.runtime.getURL("")) || sender.tab?.url?.startsWith("http")) return false;
   ready.then(() => engine.dispatch(message))
     .then((result) => respond({ok: true, result}))
-    .catch((error) => respond({ok: false, error: error.message}));
+    .catch((error) => respond({ok: false, error: error.message, details: {tabId: error.tabId}}));
   return true;
 });
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -27,6 +27,3 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }).catch(console.error);
 });
 chrome.runtime.onStartup.addListener(() => ready.catch(console.error));
-chrome.notifications.onClicked.addListener((notificationId) => {
-  ready.then(() => engine.dispatch({type: "open-notification", notificationId})).catch(console.error);
-});

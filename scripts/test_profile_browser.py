@@ -27,7 +27,7 @@ def main():
             for field, value in {'title':'Mr.', 'noMiddleName':'Yes', 'employmentStatus':'Employed', 'hasPets':'No', 'hasVehicles':'Yes', 'receiveEmail':'No'}.items():
                 panel.locator(f'#personal-{field}').select_option(value)
             panel.get_by_role('button', name='Save personal information', exact=True).click()
-            expect(panel.locator('#application-readiness')).to_contain_text('details prepared')
+            expect(panel.locator('#application-readiness')).to_have_text('Missing details')
             panel.reload()
             panel.get_by_role('tab', name='Personal information', exact=True).click()
             expect(panel.locator('#personal-dateOfBirth')).to_have_value('1995-03-04')

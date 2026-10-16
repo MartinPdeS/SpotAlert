@@ -148,13 +148,13 @@ export async function startCanvasApplication(expectedDate, waitMs = 20000) {
 }
 
 /** Fill known fields after Apply or Fill application form. Never submits. */
-export function fillApplicationForm(profile) {
+export function fillApplicationForm(profile, site = null) {
   const normalize = text => String(text || "").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const autocompleteFields = {"given-name": "firstName", "family-name": "lastName", email: "email", tel: "phone", "street-address": "address", "address-line1": "address", "postal-code": "postalCode", "address-level2": "city", name: "fullName"};
   const patterns = [["firstName", /\b(first ?name|given ?name|voornaam)\b/], ["lastName", /\b(last ?name|sur ?name|family ?name|achternaam)\b/], ["email", /\b(e ?mail)\b/], ["phone", /\b(phone|telephone|mobile|telefoon)\b/], ["postalCode", /\b(postal ?code|post ?code|zip ?code|postcode|zip)\b/], ["city", /\b(city|town|woonplaats)\b/], ["address", /\b(street ?address|address ?line ?1|street|adres)\b/], ["fullName", /\b(full ?name|your name)\b/]];
   const values = {...profile, fullName: [profile.firstName, profile.lastName].filter(Boolean).join(" ")};
-  const supported = ["canvas-world.securerc.co.uk", "southeast-thisisourdomain.securerc.co.uk", "thisisourdomain.securerc.co.uk"].includes(location.hostname);
-  const canvas = supported && /oleapplication\.aspx$/i.test(location.pathname) && !!document.querySelector('#ProspectFirstName');
+  const supported = site?.provider === "rentcafe" && location.origin === site.origin;
+  const rentCafeApplicant = supported && /oleapplication\.aspx$/i.test(location.pathname) && !!document.querySelector('#ProspectFirstName');
   const registration = supported && /oleapplication\.aspx$/i.test(location.pathname) && new URL(location.href).searchParams.get("stepname")?.toLowerCase() === "registration";
   const registrationFields = {txtName: "firstName", txtName2: "lastName", txtEmail: "email", txtPhone: "phone", BirthDate: "dateOfBirth", txtPassword: "registrationPassword"};
   const exact = {
@@ -183,7 +183,7 @@ export function fillApplicationForm(profile) {
     let field;
     if (registration) {
       field = registrationFields[id];
-    } else if (canvas) {
+    } else if (rentCafeApplicant) {
       field = exact[id] || dynamic.find(([pattern]) => pattern.test(id))?.[1];
       if (/^(?:ProspectDOB\d*|DOBLEASEBUT_REQINFO\d+)$/i.test(id)) field = "dateOfBirth";
       if (input.type === "radio" && ["hasPets", "hasVehicles"].includes(input.name)) field = input.name;

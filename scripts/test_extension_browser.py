@@ -26,12 +26,15 @@ def main():
         shutil.copytree(ROOT / "SpotAlert/chrome_extension", extension)
         with sync_playwright() as playwright:
             def launch():
-                return playwright.chromium.launch_persistent_context(
+                browser_context = playwright.chromium.launch_persistent_context(
                     str(temp / "profile"), channel="chromium", headless=True,
                     viewport={"width": 390, "height": 1000},
-                    args=[f"--disable-extensions-except={extension}", f"--load-extension={extension}"],
+                    args=["--disable-features=DisableLoadExtensionCommandLineSwitch", f"--disable-extensions-except={extension}", f"--load-extension={extension}"],
                     ignore_default_args=["--disable-extensions"],
                 )
+                worker = browser_context.service_workers[0] if browser_context.service_workers else browser_context.wait_for_event("serviceworker")
+                worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profiles disabled in isolated tests');};}")
+                return browser_context
 
             context = launch()
             try:
@@ -52,22 +55,9 @@ def main():
                 panel.on("pageerror", lambda error: errors.append(str(error)))
                 panel.goto(f"chrome-extension://{extension_id}/panel.html")
                 expect(panel.locator("#monitor-count")).to_have_text("3")
-                panel.get_by_role("tab", name="Notifications", exact=True).click()
-                expect(panel.locator("#monitoring-view")).not_to_be_visible()
-                expect(panel.locator("#notification-sites .notification-card")).to_have_count(3)
-                first_alert = panel.locator("#notification-sites")
-                first_alert.get_by_label("Pop-up alerts", exact=False).uncheck()
-                expect(first_alert.get_by_label("Sound for", exact=False)).to_be_enabled()
-                first_alert.get_by_label("Pop-up alerts", exact=False).check()
-                panel.get_by_text("Prepare phone number", exact=True).click()
-                panel.locator("#notification-phone").fill("+31612345678")
-                panel.locator("#notification-email").fill("alerts@example.com")
-                panel.get_by_role("button", name="Save settings").click()
-                panel.reload()
-                expect(panel.locator("#notification-phone")).to_have_value("+31612345678")
-                expect(panel.locator("#notification-email")).to_have_value("alerts@example.com")
-                panel.get_by_role("tab", name="Notifications", exact=True).click()
-                panel.screenshot(path=str(ARTIFACTS / "notifications.png"), full_page=True)
+                panel.get_by_role("tab", name="Settings", exact=True).click()
+                expect(panel.locator("#email-delivery-title")).to_have_text("Email delivery")
+                expect(panel.locator("#notification-email")).to_have_count(0)
                 panel.get_by_role("tab", name="Monitoring", exact=True).click()
 
                 expect(panel.locator("#discovery-title")).to_have_count(0)
@@ -77,7 +67,6 @@ def main():
                 expect(panel.locator("#monitor-url")).to_have_value(url)
                 expect(panel.locator("#rule-expected")).to_have_value("Get Notified")
                 panel.locator("#interval").select_option("30")
-                panel.locator("#notify").check()
                 panel.locator("#preview-rule").click()
                 expect(panel.locator("#preview-result")).to_contain_text("Not available · 0/2 elements matched")
                 panel.get_by_role("button", name="Save monitor", exact=True).click()
@@ -95,12 +84,8 @@ def main():
                 expect(panel.locator("#apartment-count")).to_have_text("≥1")
                 expect(panel.locator("#apartment-count-note")).to_be_visible()
                 expect(panel.locator(".sample.matched")).to_have_count(1)
-                expect(panel.locator("#availability-popup")).to_be_visible()
-                expect(panel.locator("#availability-site")).to_have_text("OurDomain · Amsterdam Diemen")
-                expect(panel.locator("#availability-listings")).to_contain_text("Apply Now")
-                panel.screenshot(path=str(ARTIFACTS / "availability-popup.png"))
-                panel.locator("#open-availability").click()
-                expect(panel.locator("#availability-popup")).not_to_be_visible()
+                expect(panel.locator("#availability-popup")).to_have_count(0)
+                expect(panel.locator("#availability-popup")).to_have_count(0)
                 assert adapter_page.url == url
                 panel.locator("#refresh-interval").select_option("60")
                 expect(panel.locator(".rule-meta")).to_contain_text("Every 1m")
@@ -132,7 +117,7 @@ def main():
                 monitor_id = worker.evaluate("async () => (await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors[0].id")
                 worker.evaluate("id => chrome.alarms.create('spotalert:' + id, {when: Date.now() + 1000})", monitor_id)
                 expect(panel.locator("#check-count")).to_have_text("4", timeout=45000)
-                expect(panel.locator("#availability-popup")).not_to_be_visible()
+                expect(panel.locator("#availability-popup")).to_have_count(0)
                 # The second catalog entry uses its own URL, tab, and persisted settings.
                 context.route(
                     "https://southeast-thisisourdomain.securerc.co.uk/**",

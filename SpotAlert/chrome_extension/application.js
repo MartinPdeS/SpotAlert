@@ -1,23 +1,25 @@
 /** Explicit one-shot action; never saves or advances the application. Runs in MAIN. */
-export function prepareCanvasSignature(screening = false) {
+export function prepareCanvasSignature(screening = false, site = null) {
   try {
   const url = new URL(location.href);
-  if (url.hostname !== 'canvas-world.securerc.co.uk' || !/\/oleapplication\.aspx$/i.test(url.pathname) || url.searchParams.get('stepname')?.toLowerCase() !== 'intapplicantinfo') throw new Error('Open the Canvas applicant information page.');
+  if (document.documentElement?.dataset.spotalertApplicationStopped === "true") throw new Error("Application automation stopped.");
+  const controls = site?.agreementSignature;
+  if (!controls || url.origin !== site.origin || !url.pathname.toLowerCase().endsWith('/' + site.paths.applicant) || url.searchParams.get('stepname')?.toLowerCase() !== controls.step) throw new Error('Open the Canvas applicant information page.');
   const visible = element => !!element?.getClientRects().length;
-  const agreement = document.getElementById('chkAgreement');
-  const screeningAgreement = document.getElementById('chkTandCAgree');
+  const agreement = document.getElementById(controls.agreementId);
+  const screeningAgreement = document.getElementById(controls.screeningId);
   if (screening === true && (!visible(screeningAgreement) || screeningAgreement.type !== 'checkbox' || screeningAgreement.disabled)) throw new Error('The screening agreement checkbox is unavailable.');
-  const first = document.getElementById('signatureOption2');
-  const toggle = [...document.querySelectorAll('a')].find(element => element.id.trim() === 'ToggleScriptSignatureLin');
-  const panel = document.getElementById('scriptSig');
-  if (!visible(agreement) || agreement.type !== 'checkbox' || agreement.disabled || !first || first.type !== 'radio' || first.name !== 'selectedSignature' || first.disabled || first.getAttribute('aria-label') !== 'Signature Type 1' || !panel?.contains(first)) throw new Error('The expected Canvas agreement and first signature controls are unavailable.');
+  const first = document.getElementById(controls.optionId);
+  const toggle = [...document.querySelectorAll('a')].find(element => element.id.trim() === controls.toggleId);
+  const panel = document.getElementById(controls.panelId);
+  if (!visible(agreement) || agreement.type !== 'checkbox' || agreement.disabled || !first || first.type !== 'radio' || first.name !== 'selectedSignature' || first.disabled || first.getAttribute('aria-label') !== controls.optionLabel || !panel?.contains(first)) throw new Error('The expected Canvas agreement and first signature controls are unavailable.');
   if (!visible(first)) {
     if (!visible(toggle)) throw new Error('The script signature chooser is unavailable.');
     toggle.click();
   }
   if (!visible(first)) throw new Error('The website did not open the script signature choices.');
   if (!first.checked) first.click();
-  if (!first.checked || document.getElementById('usersignatureType')?.value !== '1' || document.getElementById('usersignatureFont')?.value !== '2') throw new Error('The website did not register Signature Type 1.');
+  if (!first.checked || document.getElementById(controls.typeId)?.value !== controls.typeValue || document.getElementById(controls.fontId)?.value !== controls.fontValue) throw new Error('The website did not register Signature Type 1.');
   if (!agreement.checked) agreement.click();
   if (!agreement.checked) throw new Error('The website did not keep the agreement checked.');
   if (screening === true && !screeningAgreement.checked) screeningAgreement.click();

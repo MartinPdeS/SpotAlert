@@ -1,8 +1,8 @@
 # SpotAlert
 
 A standalone Chrome extension for monitoring website availability in your
-normal browser session. Open the side panel, select a supported website, inspect the
-matched elements, and watch for changes. **No Python process, TUI, native
+normal browser session. Create a search for a saved profile, select locations,
+and choose auto-apply, email, or both. **No Python process, TUI, native
 messaging bridge, or remote-debugging setup is needed.**
 
 ## Install or update
@@ -12,7 +12,7 @@ Requires Google Chrome 120 or newer.
 1. Open `chrome://extensions` in your regular Chrome profile.
 2. Enable **Developer mode**, choose **Load unpacked**, and select
    [`SpotAlert/chrome_extension`](SpotAlert/chrome_extension).
-3. Pin SpotAlert to the toolbar and click its icon to open the side panel.
+3. Pin SpotAlert to the toolbar and click its icon to open the dashboard.
 
 If you installed the earlier bridge extension, click **Reload** on its existing
 card instead. The extension ID is unchanged. Chrome may ask you to approve the
@@ -46,9 +46,9 @@ pages are recorded without changing successful availability results. Destination
 tabs stay open for inspection. Redirects beyond the supported hosts require manual
 inspection. Disabling debug mode or Stop all cancels pending capture work.
 
-## Prepare application details
+## Apply with a saved profile
 
-For an explicit Canvas agreement/signature test, open **Personal information → Canvas agreement & signature test**. SpotAlert uses the active Canvas application, the selected monitor’s application, or your most recently used Canvas applicant tab in the current window. Review the consent explanation and enable the single agreements and signature toggle before clicking **Check agreement & choose first signature**. This checks both the screening agreement (`chkTandCAgree`) and bottom agreement (`chkAgreement`), and chooses **Signature Type 1**. It does not click Save or Save & Continue. Opt-in resets after each attempt and is not saved or used by automatic application flows. Run `.venv/bin/python scripts/test_signature_browser.py` to exercise this action against isolated synthetic pages.
+Click **Apply** on an apartment, choose a profile, and confirm. For Canvas, the dialog has an optional **Include Canvas agreements & signature** toggle. It checks the screening agreement (`chkTandCAgree`), bottom agreement (`chkAgreement`), and selects **Signature Type 1**. Review the terms before enabling; Save and final submission remain manual. The toggle starts off for each application. Run `.venv/bin/python scripts/test_signature_browser.py` to check the selections against isolated synthetic pages.
 
 Open **Personal information** in the sidebar to save your first and last name,
 email, phone, street address, postal code, and city. These details stay in
@@ -99,41 +99,24 @@ The interface shows:
 - A single monitoring toolbar with start/pause, Check now, refresh interval, and settings.
 - Last successful check, availability, and total completed checks.
 - Prominent floor-plan names and room types, with rent, bedrooms, size, and bathrooms in separate rows where provided by the website.
-- Available listings first, with All, Available, and room-type filter chips. These view filters do not change monitoring or alerts; configure apartment preferences in settings.
+- Available listings first, with All, Available, and room-type filter chips. These view filters do not change profile searches; edit criteria in the applicant profile.
 - A collapsible **Technical details & activity** section containing the selector, comparison rule, and check history.
-- Errors naming the affected site, recovery actions, and notification failures.
+- Errors naming the affected site and recovery actions.
 - Responsive cards and a sticky monitoring toolbar in narrow side panels.
 - A **Compact view** toggle that remembers your preference and reduces listing spacing.
 - Separate available-website and available-apartment totals. Apartment totals show **≥** when a website provides floor-plan availability without exact unit counts. Totals reflect the last successful results.
 - Live freshness labels on website cards and selected results. Results become stale after three refresh intervals, with a minimum of one minute.
 
-Alerts track individual floor plans, so a newly available listing alerts even
-while another listing is already available. When the site publishes a unit
-count, an increase also triggers an alert. Repeated results do not repeat alerts.
+Monitoring records location availability and schedules shared checks. It does not
+send emails, pop-ups, desktop notifications or sound alerts. Profile searches own
+matching, automatic applications and notifications.
 
-Pop-ups and desktop notifications include the apartment name, rent, and listing
-link. Each pop-up offers an **Apply** link when the website exposes an application
-URL. For JavaScript-only actions, **Open application** uses the site's actual
-application button, including opening collapsed floor-plan sections. It never
-submits an application or clicks **Get Notified**. Desktop notification clicks
-keep the original listing target even if a newer alert arrives.
+## Location filters
 
-## Apartment filters and alerts
-
-In **Configure monitor**, select studios, one-bedroom, two-bedroom, or larger
-apartments, and optionally choose specific floor plans. Run **Check now** first
-to load floor-plan choices. No selection means all listings; type and floor-plan
-filters both apply. Excluded listings remain visible as **Filtered out** but do
-not affect availability or alerts. Saving configuration pauses monitoring.
-
-**Test notification** previews the pop-up and desktop alert without changing
-availability results. The optional **Play a sound with alerts** setting uses an
-offscreen audio document, so sound works with the panel closed. Chrome may ask
-you to approve the added `offscreen` permission when reloading this update.
-Desktop notification delivery also depends on your operating system settings;
-delivery failures are recorded in activity.
-
-**Pause monitoring** stops refreshes and leaves the website tab open.
+**Configure monitor** retains optional apartment-type and floor-plan filters for
+the Monitoring view. Profile searches independently evaluate raw location results
+using the selected profile’s preferences. Saving location configuration pauses it;
+active searches will restart any location they still require.
 
 ## Supported websites
 
@@ -142,7 +125,7 @@ The workspace lists known websites with built-in availability rules. Currently,
 custom-site creation, or element picker. Switching tabs does not change which
 website is monitored.
 
-Use **Configure monitor** to review the rule, change notifications, or preview
+Use **Configure monitor** to review the rule, change scheduling, or preview
 its results. The website name and URL are fixed. Saving pauses monitoring.
 Refresh presets are available directly in the monitor controls.
 
@@ -194,7 +177,6 @@ installation is required; edit the files and reload the extension in Chrome.
 - [`core.js`](SpotAlert/chrome_extension/core.js): validation, matching, and the OurDomain adapter.
 - [`engine.js`](SpotAlert/chrome_extension/engine.js): persisted monitoring state, alarms, tab refreshes, and notifications.
 - [`page.js`](SpotAlert/chrome_extension/page.js): page text extraction.
-- [`alerts.js`](SpotAlert/chrome_extension/alerts.js), [`audio.html`](SpotAlert/chrome_extension/audio.html), [`audio.js`](SpotAlert/chrome_extension/audio.js): optional background audio playback.
 - [`background.js`](SpotAlert/chrome_extension/background.js): Chrome event routing and extension-message validation.
 - [`panel.html`](SpotAlert/chrome_extension/panel.html), [`panel.css`](SpotAlert/chrome_extension/panel.css), [`panel.js`](SpotAlert/chrome_extension/panel.js): side panel and full-page workspace.
 
@@ -216,8 +198,14 @@ python scripts/test_extension_features.py
 This test runs an isolated browser profile against a local listing fixture. It
 exercises preview, extraction, refresh, availability transitions, fixed website selection,
 invalid selectors, actual Chrome alarms, browser restart, and pause. The feature
-test also exercises apartment filters, per-listing alerts, real application links,
-offscreen sound playback, snooze, monitoring hours, and verification/login recovery.
+test also exercises location filters, monitoring hours, verification/login recovery,
+profile editing, and debug captures. Search and email tests run with:
+
+```bash
+python scripts/test_searches_browser.py
+python scripts/test_email_browser.py
+python scripts/test_panel_browser.py
+```
 It saves UI screenshots under `artifacts/extension`. Your Chrome profile and
 rental website are not accessed. The Python runtime is only needed for this test.
 
@@ -227,21 +215,23 @@ persistent Chrome profile; their former `extension` mode now directs users to
 the standalone app. The native bridge modules remain for compatibility tests
 and are not used by the standalone extension.
 
-Notification settings are grouped in the **Notifications** tab: independent global pop-up and desktop alerts, sound, test alerts. Changes take effect without pausing monitoring. You can save a phone number and email destination separately from application details; SMS delivery is not implemented yet. Resend email delivery runs directly in the extension.
+### Email delivery settings
 
-The **Personal information** tab contains your application details, readiness badge, and the Fill application form action. Unsaved edits remain intact during monitoring refreshes.
+**Settings → Email delivery** contains the shared Resend API key and sender used
+by profile searches and client questionnaires. There is no general notification
+recipient or global email switch. Enable email for each profile search; it sends
+to that profile’s saved email address. SMS remains unavailable.
 
-### Resend email alerts
+To test delivery, select a saved profile in Settings and click **Send test email**.
+The test uses that profile’s email explicitly. A verified sender is required for
+other recipients; `onboarding@resend.dev` only emails the Resend account owner.
+Keys are stored locally and excluded from rule exports. Provider failures appear
+in the search action history. Requests use idempotency keys. Chrome must remain
+running, though the dashboard can be closed.
 
-Reload the extension, then open **Notifications**. Enter your recipient, paste your Resend API key, enable email, and save. The sender defaults to `onboarding@resend.dev`, which can only email the address registered with Resend. Use a sender from a verified domain for other recipients. Click **Send test email** to check delivery.
+Canvas Rotterdam Blaak is monitored through its [RentCafe floor-plan portal](https://canvas-world.securerc.co.uk/onlineleasing/andre-van-der-louwbrug-4-rotterdam-3011-wm/floorplans.aspx), linked from the [Canvas location page](https://www.canvas-world.com/nl/locations/netherlands/rotterdam/blaak). The marketing page’s permanent “View apartment” links are not availability signals. The reader supports RentCafe Apply/Availability cells, including collapsed floorplans and responsive duplicates. Canvas supports profile searches, application details, and debug capture controls. If Chrome shows a verification prompt, open the affected tab and complete it before checking again.
 
-Emails are sent directly by the extension’s background worker to Resend; no local bridge or Python process is needed. The key is saved in Chrome local storage, separate from rules and exports, and is not included in extension source or the ZIP. Chrome must keep running; closing the panel is fine. Pop-up, desktop, sound, and email channels have independent global switches. Provider failures appear in activity without changing successful availability results. Failed sends are not automatically retried. Requests use Resend idempotency keys to prevent duplicate sends of the same alert.
-
-Notification settings apply to every monitored location. Availability pop-ups also appear on open supported housing website pages, including while the panel is closed. Recent alerts (up to ten minutes old) survive page reloads until dismissed; dismissal is shared across website tabs. Reload existing website tabs after reloading the extension to install its page pop-up script.
-
-Canvas Rotterdam Blaak is monitored through its [RentCafe floor-plan portal](https://canvas-world.securerc.co.uk/onlineleasing/andre-van-der-louwbrug-4-rotterdam-3011-wm/floorplans.aspx), linked from the [Canvas location page](https://www.canvas-world.com/nl/locations/netherlands/rotterdam/blaak). The marketing page’s permanent “View apartment” links are not availability signals. The reader supports RentCafe Apply/Availability cells, including collapsed floorplans and responsive duplicates. Canvas also receives the global notifications, filters, application details, and debug capture controls. If Chrome shows a verification prompt, open the affected tab and complete it before checking again.
-
-Click the SpotAlert toolbar icon to open the dashboard in a full-width Chrome tab. Applications that need more details show a complete missing-field checklist, with shortcuts to Personal information and the application tab. Continue the application directly on the website; the dashboard has no resume controls. Unfamiliar application forms stop automatically and offer a downloadable field-structure report (labels and types, without entered values or URL tracking parameters) to help add support.
+Click the SpotAlert toolbar icon to open the dashboard in a full-width Chrome tab. Application results, missing fields, and form structure are available inside the collapsed Application diagnostics. Continue the application directly on the website; the dashboard has no resume controls. Unfamiliar application forms stop automatically and offer a downloadable field-structure report (labels and types, without entered values or URL tracking parameters) to help add support.
 
 If Apply stalls, expand Application diagnostics under the selected location. It shows the dashboard/run build, inspected pages, date selection, Start Application click and retry results, and stopping reason. Download debug report exports only control metadata; it excludes profile details, passwords, page content and URL query strings. Reload the unpacked extension at chrome://extensions and reopen the dashboard before reproducing a failure on a new build. Background-worker restarts are recorded separately from website failures.
 
@@ -251,10 +241,105 @@ The Clients tab prepares an email questionnaire using the configured Resend send
 
 Local profile storage (macOS/Linux): run `.venv/bin/python -m SpotAlert.profile_host --install` once, then reload the extension. The installed helper migrates Chrome's saved applicants into `SpotAlert/local_profiles/profiles.json`, mirrors subsequent profile saves, and restores that file on extension startup. Personal information includes See profile folder to open it in Finder/file manager. The folder and machine-specific launcher are ignored by Git. This JSON file contains personal details and passwords in plain text with owner-only file permissions; back it up privately. If the checkout or virtual environment moves, rerun the installer. Removing the extension or clearing its storage leaves this folder intact.
 
-Each location can use an assigned applicant profile or the active profile. Moving preferences include a maximum published monthly rent, minimum size in square metres, apartment type, and earliest move-in date. These preferences filter monitoring results alongside location filters; unknown rent/size does not pass a configured limit. Rent ranges use the highest published amount. Apply confirms the applicant, apartment, rent and move-in preference before filling, then reports the date selected from the actual website calendar. Personal information shows client readiness and missing details alongside the profile selector. Notifications keeps the latest 100 desktop, sound and email availability deliveries, with a Retry action for a failed channel only. Email Sent means the provider accepted the request, not that the recipient read it.
+Apply asks you to choose a saved profile for each application. Moving preferences include a maximum published monthly rent, minimum size in square metres, apartment type, and earliest move-in date. These preferences filter profile-search results; unknown rent/size does not pass a configured limit. Rent ranges use the highest published amount. Apply confirms the applicant, apartment, rent and move-in preference before filling, then reports the date selected from the actual website calendar. Personal information shows only the selected profile’s readiness and missing details, without listing locations. Each search shows its application and email history, with explicit authorization required for another attempt. Email Sent means the provider accepted the request, not that the recipient read it.
 
 Apply confirmation includes Create an account if needed. When enabled, the supported registration form is filled and Create My Account is clicked once after required details pass validation. Existing-email errors stop the flow and direct you to log in. Verification, application agreements, charges and final submission remain manual. Account creation accepts the website account Terms and Privacy Policy; marketing subscriptions are left untouched.
 
 Telephone fields with a country selector use the website's phone-widget API during autofill so international prefixes select the correct country and number format. The saved profile retains the original phone number. Website field validation is checked before advancing; invalid fields appear in the missing-details checklist instead of only a generic validation warning.
 
 Start Application waits for the selected date, an idle lease update, and a stable enabled button, then uses the website’s form validation before clicking. SpotAlert confirms arrival at the applicant page, waits 15 seconds before retrying an idle booking form, and limits the run to three click attempts. Active page updates and visible verification prompts prevent retries. Application diagnostics distinguish click attempts from confirmed navigation. Run `.venv/bin/python scripts/test_booking_browser.py` for delayed-handler, replaced-form, lost-click, slow-request, validation and verification fixtures.
+
+### Location configuration
+
+Location definitions live in `SpotAlert/chrome_extension/sites/`: `diemen.js`, `south-east.js`, and `canvas-blaak.js`, registered in `index.js`. Each definition owns its catalog identity, URL, availability rule, collapsed-plan reader behavior, and application capabilities. South East also owns its shipped-rule migration. `rentcafe.js` supplies the common booking paths, wait times and retry limits; Canvas overrides the floor-plan entry behavior and declares its agreement/signature controls.
+
+The shared engine handles navigation, validation, retries, monitoring and profiles. It passes serializable site capabilities into injected page functions, which cannot access module imports. Custom selectors retain ordinary visibility filtering. Existing monitor IDs, stored settings, profile data and histories stay compatible. To add a location, register its module and declare its hosts in the extension manifest; no build step is required.
+
+### Application workflow and recovery
+
+Apply is the dashboard’s application action. It asks which saved profile to use for that run and offers the Canvas agreement/signature opt-in in the same dialog. Choosing a profile for Apply does not change the active profile or assign it to the location. Apply shows Applying while its single run executes. The dashboard has no ongoing application card; run results and technical details remain in collapsed Application diagnostics. Verification and missing-detail stops offer a button to the affected tab; each Apply runs continuously and stops at review or when input is required. There are no resume or retry controls; start a fresh run with Apply. Signing, payment and final submission still require review on the website.
+
+Application operations hold a per-tab lock across asynchronous work; duplicate preparation or retry requests cannot change that tab concurrently. Locks release after success, cancellation or failure. Worker restarts mark interrupted runs for review. The dashboard displays the extension version and application build, checks its worker and source build periodically, and offers extension-settings and dashboard-reload buttons if they differ. Application writes from a stale dashboard are rejected before execution.
+
+### Profile-oriented searches
+
+Open **Profile searches** and choose **New search**. Select a saved applicant profile,
+choose locations, and select **Email the profile holder**, **Auto-apply**, or both.
+Budget, minimum size, apartment type and move-in date are read directly from the
+profile and displayed as a read-only summary. Edit them once in **Personal
+information**; all searches for that profile use the updated values. Existing
+copied search overrides are retired without changing the saved profile.
+Saving creates or updates a paused search. **Start search** opens an action dialog
+with separate auto-apply, email and SMS switches. Each switch has an explicit On/Off
+label, a distinct thumb position and an enabled checkmark. Choose the actions and
+confirm to begin; cancelling leaves the search paused. SMS is visibly unavailable
+until an SMS provider is added. **Pause search** stops that search without
+interrupting other profiles.
+
+Locations share one page read across active searches. Search matching uses the
+location’s availability rule and its assigned profile’s current preferences,
+independently of location filters and the currently selected dashboard profile. Location refresh
+intervals, monitoring hours, and error backoff remain configured in **Monitoring**.
+Standalone location watches continue checking without sending notifications.
+A location started by searches pauses when its last search pauses; a location
+that was already being watched independently continues checking. **Stop all**
+pauses every search and location and cancels running application automation.
+
+Profile emails use the address saved in the applicant profile, rather than the
+general recipient. Configure a Resend API key and verified sender in
+**Settings → Email delivery** first. The search email action is its only notification
+switch. With both actions selected, the email includes the application
+outcome. Provider acceptance is recorded in the search’s action history.
+
+Auto-apply opens a separate tab and uses a snapshot of the profile, including its
+preferences, captured when the match was found. Switching or editing profiles does
+not change an already queued application. Applications run in sequence, separately
+for each applicant. Account creation is a separate opt-in on the search; account
+Terms and Privacy Policy apply when enabled. Canvas agreements/signature, verification,
+missing details, payments, and final application submission require manual review.
+Open the application from its search action history to continue on the website.
+
+Emails and automatic applications are deduplicated permanently by profile,
+location, and listing, including overlapping searches and worker restarts. A
+listing disappearing and returning does not trigger another automatic application
+or email for that profile. Failed or interrupted actions remain visible for review
+and are not automatically retried. Actions cancelled before execution can be picked
+up by a later successful check after restarting the search. Worker restarts mark
+unfinished actions as interrupted, preserving their claims to prevent duplicate
+applications. Deleting a search does not erase these duplicate-prevention records.
+
+Run `node --test tests/chrome_extension.test.cjs` for search matching and delivery
+behavior, and `.venv/bin/python scripts/test_searches_browser.py` for the isolated
+search-editor browser test. The latter uses no real housing pages or email delivery.
+
+#### Understand exclusions and readiness
+
+Expand **Excluded & unavailable** on a search to see why apartments were skipped:
+not currently available, a different apartment type, missing published rent/size,
+or the exact amount over budget or below minimum size. These explanations use the
+assigned profile’s current preferences.
+
+Before a search starts, the action dialog checks the chosen profile, contact
+information, location permissions, email credentials/sender and, when selected,
+the account password. Missing setup blocks Start. It also lists location-specific
+applicant fields: the common RentCafe details for OurDomain, and the expanded
+known Canvas requirements for Canvas. Missing website fields are shown as expected
+manual input; you can start with review steps. These checks do not establish an
+active login, verify the sender with Resend or guarantee the live website will
+accept an application. Review profile details from the dialog to fix missing data.
+
+#### Review duplicate protection and authorize another attempt
+
+Listing badges and **Previous actions & duplicate protection** show the latest
+email/application attempt, date and outcome for that profile and location across
+all searches, including deleted searches. Older records without retained details
+are labeled accordingly. An email accepted by the provider is not proof of inbox
+delivery; an application attempt is not a final submission.
+
+To deliberately repeat an action, start the search with that channel enabled,
+obtain a fresh successful result where the apartment still matches, then choose
+**Authorize another email/application**. Review the previous outcome and explicitly
+check the authorization box. This schedules one additional attempt and preserves
+duplicate protection. Concurrent clicks and outdated dialogs cannot schedule the
+same authorization twice. Pausing before an authorized repeat executes restores
+the original protection. The latest ten earlier attempts remain with its record.

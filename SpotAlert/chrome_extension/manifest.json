@@ -10,9 +10,7 @@
     "sidePanel",
     "scripting",
     "alarms",
-    "notifications",
-    "tabs",
-    "offscreen"
+    "tabs"
   ],
   "host_permissions": [
     "https://thisisourdomain.securerc.co.uk/*",
@@ -41,19 +39,5 @@
   },
   "side_panel": {
     "default_path": "panel.html"
-  },
-  "content_scripts": [
-    {
-      "matches": [
-        "https://thisisourdomain.securerc.co.uk/*",
-        "https://southeast-thisisourdomain.securerc.co.uk/*",
-        "https://canvas-world.securerc.co.uk/*",
-        "https://www.canvas-world.com/*"
-      ],
-      "js": [
-        "website-popup.js"
-      ],
-      "run_at": "document_idle"
-    }
-  ]
+  }
 }

@@ -34,27 +34,24 @@ def main():
             panel = context.new_page()
             panel.goto(worker.url.replace('background.js', 'panel.html'))
             panel.get_by_role('tab', name='Personal information', exact=True).click()
-            expect(panel.locator('.signature-test-card')).to_have_count(1)
-            action = panel.locator('#prepare-signature')
-            expect(action).to_be_disabled()
-            expect(panel.locator('#find-signature-tabs')).to_have_count(0)
+            expect(panel.locator('#fill-application')).to_have_count(0)
+            def prepare():
+                return panel.evaluate("()=>chrome.runtime.sendMessage({type:'prepare-application',canvasSignature:true})")
+            expect(panel.locator('#prepare-signature')).to_have_count(0)
+            panel.evaluate("()=>chrome.runtime.sendMessage({type:'save-profile',profile:{firstName:'Alex'}})")
             tab_id = worker.evaluate("async()=> (await chrome.tabs.query({url:'https://canvas-world.securerc.co.uk/*'}))[0].id")
             expect(site.locator('#chkAgreement')).not_to_be_checked()
             # The background also rejects messages without explicit opt-in.
             result = panel.evaluate("id=>chrome.runtime.sendMessage({type:'prepare-canvas-signature',tabId:Number(id)})", tab_id)
             assert result['ok'] is False
-            panel.locator('#signature-consent').check()
-            expect(action).to_be_enabled()
-            action.click()
-            expect(panel.locator('#signature-test-status')).to_contain_text('Signature Type 1 selected')
+            result = prepare()
+            assert result['ok'] is True and 'Signature Type 1 selected' in result['result']['message']
             expect(site.locator('#chkAgreement')).to_be_checked()
             expect(site.locator('#signatureOption2')).to_be_checked()
             expect(site.locator('#signatureOption11')).not_to_be_checked()
             expect(site.locator('#chkTandCAgree')).to_be_checked()
             expect(site.locator('#usersignatureFont')).to_have_value('2')
             expect(site.locator('#usersignatureType')).to_have_value('1')
-            expect(panel.locator('#signature-consent')).not_to_be_checked()
-            expect(action).to_be_disabled()
             assert site.locator('body').get_attribute('data-saved') is None
             assert site.locator('body').get_attribute('data-submitted') is None
             step = panel.evaluate("""async id => {
@@ -64,16 +61,13 @@ def main():
             assert step['kind'] == 'signature'
             assert site.locator('body').get_attribute('data-submitted') is None
             # Repeating does not toggle off already selected controls.
-            panel.locator('#signature-consent').check()
-            action.click()
-            expect(panel.locator('#signature-test-status')).to_contain_text('Signature Type 1 selected')
-            expect(panel.locator('#signature-consent')).not_to_be_checked()
+            result = prepare()
+            assert result['ok'] is True and 'Signature Type 1 selected' in result['result']['message']
             expect(site.locator('#chkAgreement')).to_be_checked()
             # Stale tab selections cannot act on later application steps.
             site.goto(URL.replace('IntApplicantInfo', 'ApplicationCharges'))
-            panel.locator('#signature-consent').check()
-            action.click()
-            expect(panel.locator('#signature-test-status')).to_contain_text('Open your Canvas')
+            result = prepare()
+            assert result['ok'] is False and 'Open your Canvas' in result['error']
             expect(site.locator('#chkAgreement')).not_to_be_checked()
             # Missing, disabled and broken controls fail without consenting.
             for change in [
@@ -84,9 +78,8 @@ def main():
             ]:
                 site.goto(URL)
                 site.evaluate(change)
-                panel.locator('#signature-consent').check()
-                action.click()
-                expect(panel.locator('#signature-test-status')).to_contain_text('website' if 'onclick' in change else 'unavailable')
+                result = prepare()
+                assert result['ok'] is False and ('website' if 'onclick' in change else 'unavailable') in result['error']
                 expect(site.locator('#chkAgreement')).not_to_be_checked()
                 assert site.locator('body').get_attribute('data-submitted') is None
             # Fill application form uses the same open page and both explicit opt-ins.
@@ -95,9 +88,8 @@ def main():
             assert result['ok'] is True
             panel.reload()
             panel.get_by_role('tab', name='Personal information', exact=True).click()
-            panel.locator('#signature-consent').check()
-            panel.locator('#fill-application').click()
-            expect(panel.locator('#signature-test-status')).to_contain_text('Signature Type 1 selected')
+            result = prepare()
+            assert result['ok'] is True and 'Signature Type 1 selected' in result['result']['message']
             expect(site.locator('#chkAgreement')).to_be_checked()
             expect(site.locator('#signatureOption2')).to_be_checked()
             expect(site.locator('#chkTandCAgree')).to_be_checked()
@@ -111,14 +103,30 @@ def main():
                 monitor.samples=[{id:'signature-test',matched:true,name:'Test apartment'}];
                 await chrome.storage.local.set({[key]:value});
             }""", URL)
+            panel.get_by_role('tab', name='Monitoring', exact=True).click()
+            panel.locator('.monitor-card').filter(has_text='Canvas').click()
+            panel.locator('.sample').get_by_role('button', name='Apply').click()
+            panel.locator('#apply-profile').select_option('default')
+            expect(panel.locator('#apply-agreements')).to_be_visible()
+            panel.locator('#signature-consent').check()
             with context.expect_page() as opened:
-                result = panel.evaluate("()=>chrome.runtime.sendMessage({type:'open-listing',id:'canvas-rotterdam-blaak',listingId:'signature-test',signatureConsent:true,screening:true})")
-            assert result['ok'] is True, result
+                panel.locator('#confirm-apply').click()
+            expect(panel.locator('#signature-consent')).not_to_be_checked()
             destination = opened.value
             expect(destination.locator('#chkAgreement')).to_be_checked()
             expect(destination.locator('#chkTandCAgree')).to_be_checked()
             expect(destination.locator('#signatureOption2')).to_be_checked()
             assert destination.locator('body').get_attribute('data-submitted') is None
+            expect(panel.locator('#extension-version')).to_contain_text('SpotAlert')
+            expect(panel.locator('#extension-update')).to_be_hidden()
+            stale = panel.evaluate("()=>chrome.runtime.sendMessage({type:'prepare-application',dashboardBuild:'older-build'})")
+            assert stale['ok'] is False and 'versions do not match' in stale['error']
+            panel.evaluate("""()=>{
+                const original=chrome.runtime.sendMessage.bind(chrome.runtime);
+                chrome.runtime.sendMessage=message=>message.type==='engine-info'?Promise.resolve({ok:true,result:{build:'old-worker',version:'0.0.0'}}):original(message);
+            }""")
+            expect(panel.locator('#extension-update')).to_be_visible(timeout=20000)
+            expect(panel.get_by_role('button', name='Open extension settings')).to_be_visible()
         finally:
             context.close()
     print('Canvas signature test passed: explicit opt-in, first signature, repeat, stale tabs, missing/disabled controls, handler failure, no save or submit.')
