@@ -15,6 +15,7 @@ def main():
         context = p.chromium.launch_persistent_context(profile, channel='chromium', headless=True, args=[f'--disable-extensions-except={extension}', f'--load-extension={extension}'], ignore_default_args=['--disable-extensions'])
         try:
             worker = context.service_workers[0] if context.service_workers else context.wait_for_event('serviceworker')
+            worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
             worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profile folder disabled in isolated tests');};}")
             panel = context.new_page()
             panel.goto(worker.url.replace('background.js', 'panel.html'))

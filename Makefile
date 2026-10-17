@@ -61,6 +61,7 @@ extension-browser-test:
 	$(PYTHON) scripts/test_application_browser.py
 	$(PYTHON) scripts/test_workspace_browser.py
 	$(PYTHON) scripts/test_page_read_browser.py
+	$(PYTHON) scripts/test_hybrid_browser.py
 
 check: quality test extension-test
 

@@ -154,7 +154,7 @@ def test_extension_has_stable_id_and_restricted_permissions():
     # The optional applicant-profile folder uses the native helper; monitoring
     # itself still runs entirely inside Chrome.
     assert set(manifest["permissions"]) == {
-        "storage", "nativeMessaging", "sidePanel", "scripting", "alarms", "tabs",
+        "storage", "nativeMessaging", "sidePanel", "scripting", "alarms", "tabs", "offscreen",
     }
     assert "sidePanel" in manifest["permissions"]
 

@@ -2,6 +2,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from browser_helpers import select_building_for_actions
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,7 @@ def main():
             ignore_default_args=["--disable-extensions"])
         try:
             worker = context.service_workers[0] if context.service_workers else context.wait_for_event("serviceworker")
+            worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
             worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Isolated test');};}")
             fixture = {"verification": False, "delay": False}
             def portal(route):
@@ -50,23 +52,27 @@ def main():
                 return execute(options);
               };
             }""")
-            panel.get_by_role("button", name="↻ Check now", exact=True).click()
+            select_building_for_actions(panel)
+            panel.get_by_role("button", name="Check now", exact=True).click()
             expect(panel.locator(".sample-name")).to_have_text("Studio with balcony", timeout=20000)
             expect(panel.locator(".error-box, .attention-monitor")).to_have_count(0)
             fixture["delay"] = True
-            panel.get_by_role("button", name="↻ Check now", exact=True).click()
+            select_building_for_actions(panel)
+            panel.get_by_role("button", name="Check now", exact=True).click()
             expect(panel.locator("#check-count")).to_have_text("2", timeout=20000)
             expect(panel.locator(".sample-name")).to_have_text("Late studio")
             assert worker.evaluate("globalThis.asyncReads") == 0
             fixture["delay"] = False
             worker.evaluate("()=>{globalThis.missingReads=10;}")
-            panel.get_by_role("button", name="↻ Check now", exact=True).click()
+            select_building_for_actions(panel)
+            panel.get_by_role("button", name="Check now", exact=True).click()
             expect(panel.locator(".attention-monitor")).to_contain_text("no page data after retrying", timeout=20000)
             expect(panel.locator(".attention-monitor")).not_to_contain_text("site access permissions")
             expect(panel.locator(".sample-name")).to_have_text("Late studio")
             fixture["verification"] = True
             worker.evaluate("()=>{globalThis.missingReads=1;}")
-            panel.get_by_role("button", name="↻ Check now", exact=True).click()
+            select_building_for_actions(panel)
+            panel.get_by_role("button", name="Check now", exact=True).click()
             expect(panel.locator(".attention-monitor")).to_contain_text("verification prompt", timeout=20000)
             assert not errors, errors
             print("Canvas read recovery passed: synchronous reads, late listings, empty-result retry, verification detection, and preserved results.")

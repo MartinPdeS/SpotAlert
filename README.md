@@ -27,13 +27,28 @@ The expand button opens the same interface as a full-page developer workspace.
 Navigation follows **Searches, Locations, Profiles, Clients, Settings**.
 **Searches** manages applicant-specific matching and email/application actions.
 **Locations** manages general website monitoring without applicant criteria.
-Each location shows **General monitoring · On/Off** and whether profile searches
-also use it. **Stop general monitoring** leaves profile searches running; pausing
+The shared action bar groups **Start/Stop monitoring** and **Check now** above
+the buildings. Each detail panel shows availability and settings. **Stop monitoring** leaves profile searches running; pausing
 the last profile search leaves general monitoring running if it is on. Page reads
 are shared across both modes.
 
-While a page check is running, **Cancel check** stops that check and keeps the next
-scheduled check. **Stop general monitoring** stops recurring general checks.
+Tick the checkboxes on building cards to choose the batch scope. All buildings
+are selected initially; your choices are saved. On mobile, use **Choose buildings**.
+One shared **Check now** and **Start/Stop monitoring** pair uses the ticked
+buildings. A selection count shows their scope; both buttons are disabled when
+none are selected. If some selected buildings are already monitored, Start
+monitoring enables the remaining ones. Stop monitoring stops the entire selection. Viewing a building does not change its checkbox.
+
+**Check now** runs one availability check for the ticked buildings
+and shows progress, failures, and a **Cancel checks** control. It does not turn
+recurring monitoring on. The building detail panel shows results and settings without duplicate action buttons.
+
+Each building has an **Application activity** section: it shows the last application
+attempt or an explicit empty state. Availability checks do not create these records.
+Technical traces and report downloads are nested inside the recorded attempt.
+
+While a manual batch is running, **Cancel checks** stops it and keeps any future
+scheduled checks. **Stop monitoring** stops recurring general checks for the selection.
 **Stop all** stops both general monitoring and every profile search. Running
 applications have a separate **Cancel application** control; cancellation cannot
 undo requests already sent to a website.
@@ -60,7 +75,7 @@ Partial profiles can be saved, and the Save profile bar stays visible while
 scrolling. Fictional applicants carry a **Test profile** badge.
 
 Locations keeps its overview collapsed and puts the interval and monitor
-configuration under **Options**. Narrow windows use a location dropdown. Debug captures, build information, rule exports, and the
+configuration under **Options**. Display settings and totals sit below the results. Narrow windows use a location dropdown. Debug captures, build information, rule exports, and the
 optional local profile helper are under **Settings → Advanced**.
 
 Error notices include **Copy diagnostics** and stay visible until dismissed or
@@ -71,6 +86,31 @@ location failure categories and check times, application traces, and the latest
 the dashboard. Reports omit profile records, email settings, request bodies, and
 page contents; common credentials, email addresses, and URL paths in error text
 are masked. Review the report before sharing it.
+
+## Hybrid availability checks
+
+Availability checks try a direct background HTML request first. Complete,
+recognizable floor-plan data is parsed in a detached extension document without
+opening a website tab, executing website scripts, or loading its resources.
+Profile searches use the same results and keep their existing criteria and actions.
+
+Blocked requests, login/verification pages, custom selectors, missing controls,
+conflicting listing data, or missing previously observed plans fall back to the
+browser reader. Failed direct attempts have a five-minute cooldown; browser checks
+continue at the configured interval during that time. Direct requests have a
+five-second timeout and a 2 MB response limit. Cancel check cancels either method.
+**Background check** or **Browser check** appears beside the location status;
+**Technical details & activity** and diagnostic reports include the fallback reason.
+
+This uses Chrome's **offscreen** permission for HTML parsing. Reload the extension
+and accept the permission change if Chrome requests it. Applications and optional
+application debug captures still use real browser pages. Existing website tabs are
+kept open. Polling intervals and Chrome alarm limitations are unchanged.
+
+Direct requests to all three portals returned HTTP 403 in our initial environment
+check, so tab-free operation depends on what the portal allows from your Chrome
+session. The browser fallback remains essential; faster live refreshes are not yet
+verified. `scripts/test_hybrid_browser.py` covers both paths using isolated fixtures.
 
 ## Debug application links
 
@@ -119,7 +159,7 @@ needs missing information, documents, verification, agreements, registration/log
 payment, lease review, or final submission. Registration fields (including a saved
 password) are filled. Review **Create an account if needed** in the Apply
 confirmation or profile search: enabling it allows account creation; otherwise
-registration stays manual. Existing-account messages stop automation so you can log in. Application diagnostics show where
+registration stays manual. Existing-account messages stop automation so you can log in. Application activity show where
 it stopped and open the application tab so you can complete the remaining steps. Stop application and Stop all halt automation. Calendar limits and excluded weekends are respected. The
 flow waits for Canvas's background form updates and leaves monitoring on its original
 tab. Login or verification prompts may require manual completion.
@@ -295,9 +335,9 @@ running, though the dashboard can be closed.
 
 Canvas Rotterdam Blaak is monitored through its [RentCafe floor-plan portal](https://canvas-world.securerc.co.uk/onlineleasing/andre-van-der-louwbrug-4-rotterdam-3011-wm/floorplans.aspx), linked from the [Canvas location page](https://www.canvas-world.com/nl/locations/netherlands/rotterdam/blaak). The marketing page’s permanent “View apartment” links are not availability signals. The reader supports RentCafe Apply/Availability cells, including collapsed floorplans and responsive duplicates. Canvas supports profile searches, application details, and debug capture controls. If Chrome shows a verification prompt, open the affected tab and complete it before checking again.
 
-Click the SpotAlert toolbar icon to open the dashboard in a full-width Chrome tab. Application results, missing fields, and form structure are available inside the collapsed Application diagnostics. Continue the application directly on the website; the dashboard has no resume controls. Unfamiliar application forms stop automatically and offer a downloadable field-structure report (labels and types, without entered values or URL tracking parameters) to help add support.
+Click the SpotAlert toolbar icon to open the dashboard in a full-width Chrome tab. Application results, missing fields, and form structure are available inside the collapsed Application activity. Continue the application directly on the website; the dashboard has no resume controls. Unfamiliar application forms stop automatically and offer a downloadable field-structure report (labels and types, without entered values or URL tracking parameters) to help add support.
 
-If Apply stalls, expand Application diagnostics under the selected location. It shows the dashboard/run build, inspected pages, date selection, Start Application click and retry results, and stopping reason. Download debug report exports only control metadata; it excludes profile details, passwords, page content and URL query strings. Reload the unpacked extension at chrome://extensions and reopen the dashboard before reproducing a failure on a new build. Background-worker restarts are recorded separately from website failures.
+If Apply stalls, expand Application activity under the selected location, then Technical trace & report. It shows the dashboard/run build, inspected pages, date selection, Start Application click and retry results, and stopping reason. Download debug report exports only control metadata; it excludes profile details, passwords, page content and URL query strings. Reload the unpacked extension at chrome://extensions and reopen the dashboard before reproducing a failure on a new build. Background-worker restarts are recorded separately from website failures.
 
 Profiles support named saved applicant profiles. Create or select a profile, then save its details. Apply and Fill application form use the selected saved profile, including its account password. Existing details migrate into My profile; profiles stay in Chrome local storage.
 
@@ -324,7 +364,7 @@ Apply confirmation includes Create an account if needed. When enabled, the suppo
 
 Telephone fields with a country selector use the website's phone-widget API during autofill so international prefixes select the correct country and number format. The saved profile retains the original phone number. Website field validation is checked before advancing; invalid fields appear in the missing-details checklist instead of only a generic validation warning.
 
-Start Application waits for the selected date, an idle lease update, and a stable enabled button, then uses the website’s form validation before clicking. SpotAlert confirms arrival at the applicant page, waits 15 seconds before retrying an idle booking form, and limits the run to three click attempts. Active page updates and visible verification prompts prevent retries. Application diagnostics distinguish click attempts from confirmed navigation. Run `.venv/bin/python scripts/test_booking_browser.py` for delayed-handler, replaced-form, lost-click, slow-request, validation and verification fixtures.
+Start Application waits for the selected date, an idle lease update, and a stable enabled button, then uses the website’s form validation before clicking. SpotAlert confirms arrival at the applicant page, waits 15 seconds before retrying an idle booking form, and limits the run to three click attempts. Active page updates and visible verification prompts prevent retries. Application activity distinguish click attempts from confirmed navigation. Run `.venv/bin/python scripts/test_booking_browser.py` for delayed-handler, replaced-form, lost-click, slow-request, validation and verification fixtures.
 
 ### Location configuration
 
@@ -334,7 +374,7 @@ The shared engine handles navigation, validation, retries, monitoring and profil
 
 ### Application workflow and recovery
 
-Apply is the dashboard’s application action. It asks which saved profile to use for that run and offers the Canvas agreement/signature opt-in in the same dialog. Choosing a profile for Apply does not change the active profile or assign it to the location. Apply shows Applying while its single run executes. The dashboard has no ongoing application card; run results and technical details remain in collapsed Application diagnostics. Verification and missing-detail stops offer a button to the affected tab; each Apply runs continuously and stops at review or when input is required. There are no resume or retry controls; start a fresh run with Apply. Signing, payment and final submission still require review on the website.
+Apply is the dashboard’s application action. It asks which saved profile to use for that run and offers the Canvas agreement/signature opt-in in the same dialog. Choosing a profile for Apply does not change the active profile or assign it to the location. Apply shows Applying while its single run executes. The dashboard has no ongoing application card; run results and technical details remain in collapsed Application activity. Verification and missing-detail stops offer a button to the affected tab; each Apply runs continuously and stops at review or when input is required. There are no resume or retry controls; start a fresh run with Apply. Signing, payment and final submission still require review on the website.
 
 Application operations hold a per-tab lock across asynchronous work; duplicate preparation or retry requests cannot change that tab concurrently. Locks release after success, cancellation or failure. Worker restarts mark interrupted runs for review. Settings → Advanced displays the extension version and application build, checks its worker and source build periodically, and offers extension-settings and dashboard-reload buttons if they differ. Application writes from a stale dashboard are rejected before execution.
 

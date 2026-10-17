@@ -10,7 +10,7 @@ chrome.action.onClicked.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
-  if (sender.id !== chrome.runtime.id || message?.target === "audio") return false;
+  if (sender.id !== chrome.runtime.id || ["audio", "listing-parser"].includes(message?.target)) return false;
   // Monitor commands come from the extension workspace.
   if (!sender.url?.startsWith(chrome.runtime.getURL("")) || sender.tab?.url?.startsWith("http")) return false;
   ready.then(() => engine.dispatch(message))

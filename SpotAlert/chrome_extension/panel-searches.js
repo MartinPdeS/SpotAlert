@@ -70,7 +70,7 @@ export function createSearchView({$, element, guard, request, loadState, switchT
       filter.replaceChildren(element('option', {value: ''}, 'All profiles'), ...profiles.map(profile => element('option', {value: profile.id}, profile.name)));
       filter.value = profiles.some(profile => profile.id === selectedProfile) ? selectedProfile : '';
     }
-    filter.disabled = !searches.length;
+    filter.disabled = !profiles.length;
     const expanded = new Map([...root.querySelectorAll('.search-card')].map(card => [card.dataset.searchId, Object.fromEntries([...card.querySelectorAll('details[data-disclosure]')].map(item => [item.dataset.disclosure, item.open]))]));
     const detailExpanded = Object.fromEntries([...$('#search-detail-body').querySelectorAll('details[data-disclosure]')].map(item => [item.dataset.disclosure, item.open]));
     const detailFocus = $('#search-detail-body').contains(document.activeElement) ? document.activeElement.textContent : null;

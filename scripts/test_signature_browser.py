@@ -28,6 +28,7 @@ def main():
         try:
             context.route('https://**/*', lambda route: route.fulfill(body=FIXTURE, content_type='text/html'))
             worker = context.service_workers[0] if context.service_workers else context.wait_for_event('serviceworker')
+            worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
             worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profile storage disabled in tests');};}")
             site = context.new_page()
             site.goto(URL)

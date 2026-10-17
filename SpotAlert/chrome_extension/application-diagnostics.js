@@ -1,4 +1,4 @@
-export const APPLICATION_BUILD = '2026.10.16.3';
+export const APPLICATION_BUILD = '2026.10.17.2';
 
 /** Only application-control metadata: no profile, page content or tracked URLs. */
 export function applicationReport(application = {}) {

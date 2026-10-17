@@ -13,9 +13,11 @@ export function diagnosticReport(state = {}, recent = [], environment = {}) {
   return {
     format: 1, generatedAt: new Date().toISOString(), build: APPLICATION_BUILD,
     version: environment.version || 'unknown', browser: environment.browser || 'unknown',
+    buildingChecks: state.checkBatch ? Object.fromEntries(['status', 'total', 'completed', 'failed', 'currentId', 'startedAt', 'finishedAt'].filter(key => state.checkBatch[key] !== undefined).map(key => [key, state.checkBatch[key]])) : null,
     recentErrors: recent.slice(-20).map(item => ({at: item.at, operation: diagnosticText(item.operation), message: diagnosticText(item.message)})),
     locations: (state.monitors || []).map(item => ({
       id: item.id, site: (() => { try { return new URL(item.url).hostname; } catch { return 'unknown'; } })(),
+      readMethod: item.readMethod || null, readFallbackReason: diagnosticText(item.readFallbackReason), backgroundRetryAt: item.backgroundRetryAt || null,
       enabled: !!item.enabled, phase: item.phase, errorKind: item.errorKind || null,
       error: diagnosticText(item.error), consecutiveErrors: item.consecutiveErrors || 0,
       lastCheckedAt: item.lastCheckedAt || null, nextCheckAt: item.nextCheckAt || null,

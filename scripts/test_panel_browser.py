@@ -16,6 +16,7 @@ def main():
             ignore_default_args=['--disable-extensions'])
         try:
             worker = context.service_workers[0] if context.service_workers else context.wait_for_event('serviceworker')
+            worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
             worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profiles disabled in isolated tests');};}")
             panel = context.new_page()
             panel.goto(worker.url.replace('background.js', 'panel.html'))
@@ -38,7 +39,7 @@ def main():
                 expect(panel.locator('.application-diagnostics')).to_have_count(1)
                 expect(panel.locator('.application-diagnostics .application-result')).to_have_text('Review the application before saving.')
                 assert not panel.locator('.application-diagnostics').evaluate('(node)=>node.open')
-                expect(panel.locator('.application-progress')).to_have_count(0)
+                expect(panel.locator('.application-progress')).to_have_count(1 if status == 'running' else 0)
                 expect(panel.get_by_role('heading', name='Current application')).to_have_count(0)
                 expect(panel.locator('#detail > .move-in-feedback')).to_have_count(0)
             panel.set_viewport_size({'width': 1280, 'height': 1000})

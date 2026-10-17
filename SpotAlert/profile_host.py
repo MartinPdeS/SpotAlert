@@ -42,13 +42,21 @@ def handle(message, folder=FOLDER):
     path = folder / 'profiles.json'
     if path.is_symlink():
         raise ValueError('Profile file must not be a symbolic link')
+    pending = folder / 'pending-import.json'
+    if pending.is_symlink():
+        raise ValueError('Pending profile file must not be a symbolic link')
     command = message.get('command')
     if command == 'read':
-        if not path.exists():
-            return {'ok': True, 'library': None, 'folder': str(folder)}
-        if path.stat().st_size > LIMIT:
-            raise ValueError('Profile file is too large')
-        return {'ok': True, 'library': validate_library(json.loads(path.read_text())), 'folder': str(folder)}
+        result = {'ok': True, 'library': None, 'folder': str(folder)}
+        if path.exists():
+            if path.stat().st_size > LIMIT:
+                raise ValueError('Profile file is too large')
+            result['library'] = validate_library(json.loads(path.read_text()))
+        if pending.exists():
+            if pending.stat().st_size > LIMIT:
+                raise ValueError('Pending profile file is too large')
+            result['pendingLibrary'] = validate_library(json.loads(pending.read_text()))
+        return result
     if command == 'write':
         library = validate_library(message.get('library'))
         payload = json.dumps(library, indent=2, ensure_ascii=False).encode('utf-8')
@@ -64,6 +72,10 @@ def handle(message, folder=FOLDER):
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+        if pending.exists():
+            queued = validate_library(json.loads(pending.read_text()))
+            if all(entry in library['profiles'] for entry in queued['profiles']):
+                pending.unlink()
         return {'ok': True, 'folder': str(folder)}
     if command == 'open':
         subprocess.run(['open' if sys.platform == 'darwin' else 'xdg-open', str(folder)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

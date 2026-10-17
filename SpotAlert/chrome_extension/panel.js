@@ -41,6 +41,30 @@ let personalProfile = {};
 let applicantLibrary = {profiles: []};
 let pendingApplication = null;
 let compactView = false;
+let checkBuildingIds = new Set();
+let buildingSelectionWrites = 0;
+let changingSelectedMonitoring = false;
+let uiPreferenceWrites = Promise.resolve();
+function saveUiPreferences(patch) {
+  uiPreferenceWrites = uiPreferenceWrites.catch(() => {}).then(async () => {
+    const stored = (await chrome.storage.local.get(UI_KEY))[UI_KEY] || {};
+    await chrome.storage.local.set({[UI_KEY]: {...stored, ...patch}});
+  });
+  return uiPreferenceWrites;
+}
+function buildingCheckbox(monitor, picker) {
+  const checkbox = element('input', {type: 'checkbox', 'data-check-building-id': monitor.id, 'data-check-picker': picker, title: 'Use this building for Check now and monitoring', 'aria-label': `Select ${monitor.name}`});
+  checkbox.checked = checkBuildingIds.has(monitor.id);
+  checkbox.disabled = value.checkBatch?.status === 'running';
+  checkbox.addEventListener('change', guard(async () => {
+    if (checkbox.checked) checkBuildingIds.add(monitor.id); else checkBuildingIds.delete(monitor.id);
+    const ids = [...checkBuildingIds];
+    buildingSelectionWrites++;
+    render();
+    try { await saveUiPreferences({checkBuildingIds: ids}); } finally { buildingSelectionWrites--; }
+  }));
+  return checkbox;
+}
 import {EMAIL_KEY, CONTACT_KEY} from "./email.js";
 let contactsLoaded = false;
 let personalDirty = false;
@@ -122,6 +146,7 @@ async function loadState() {
         else input.value = personalProfile[field] || "";
       }
       compactView = Boolean(preferences[UI_KEY]?.compact);
+      if (!buildingSelectionWrites) checkBuildingIds = new Set(Array.isArray(preferences[UI_KEY]?.checkBuildingIds) ? preferences[UI_KEY].checkBuildingIds.filter(id => state.monitors.some(monitor => monitor.id === id)) : state.monitors.map(monitor => monitor.id));
       if (!contactsLoaded) {
         $("#client-reply-to").value = preferences[CONTACT_KEY]?.email || "";
         $("#email-api-key").value = preferences[EMAIL_KEY]?.apiKey || "";
@@ -159,6 +184,28 @@ function render() {
   renderDebug();
   renderSettings();
   renderClientOverview();
+  const batch = value.checkBatch;
+  const batchRunning = batch?.status === 'running';
+  const included = value.monitors.filter(monitor => checkBuildingIds.has(monitor.id));
+  $('#check-all-buildings').disabled = batchRunning || !included.length;
+  $('#check-all-buildings').setAttribute('aria-busy', String(batchRunning));
+  $('#check-all-buildings').textContent = batchRunning ? `Checking ${Math.min(batch.completed + 1, batch.total)}/${batch.total}…` : 'Check now';
+  $('#building-selection-count').textContent = included.length ? `${included.length} ${included.length === 1 ? 'building' : 'buildings'} selected` : 'Select buildings below';
+  const allMonitoring = included.length && included.every(monitor => monitoringScope(monitor, value.searches).general);
+  const monitorSelected = $('#monitor-selected-buildings');
+  monitorSelected.textContent = changingSelectedMonitoring ? 'Updating…' : allMonitoring ? 'Stop monitoring' : 'Start monitoring';
+  monitorSelected.className = allMonitoring ? 'danger-button' : 'secondary-button';
+  monitorSelected.disabled = !included.length || changingSelectedMonitoring;
+  monitorSelected.setAttribute('aria-busy', String(changingSelectedMonitoring));
+  monitorSelected.title = allMonitoring ? 'Stop general monitoring for the selected buildings' : 'Start general monitoring for the selected buildings';
+  $('#check-all-buildings').title = 'Check the ticked buildings once. Does not start recurring monitoring.';
+  $('#cancel-all-checks').hidden = !batchRunning;
+  const batchProgress = $('#building-check-progress');
+  batchProgress.hidden = !batch;
+  if (batch) {
+    const current = value.monitors.find(monitor => monitor.id === batch.currentId);
+    batchProgress.textContent = batchRunning ? `${batch.completed} of ${batch.total} checked${current ? ` · ${current.name}` : ''}` : `${batch.status === 'cancelled' ? 'Cancelled' : batch.status === 'interrupted' ? 'Interrupted by extension restart' : 'Finished'} · ${batch.completed} of ${batch.total} checked${batch.failed ? ` · ${batch.failed} failed; review the affected building` : ''}`;
+  }
   const totals = availabilityTotals(value.monitors);
   $("#apartment-count").textContent = `${totals.unknownCounts ? "≥" : ""}${totals.apartments}`;
   $("#apartment-count-note").hidden = !totals.unknownCounts;
@@ -175,16 +222,21 @@ function render() {
     locationPicker.replaceChildren(...locationOptions.map(([id, name]) => element("option", {value: id}, name)));
   }
   locationPicker.value = selectedId;
-  $("#monitors").replaceChildren(...value.monitors.map((monitor) => element("button", {
-    class: `monitor-card${monitor.enabled ? " watching" : ""}${monitor.id === selectedId ? " selected" : ""}`,
+  const focusedCheckbox = document.activeElement?.dataset.checkBuildingId;
+  const focusedPicker = document.activeElement?.dataset.checkPicker;
+  $("#monitors").replaceChildren(...value.monitors.map((monitor) => element("div", {class: `monitor-choice${checkBuildingIds.has(monitor.id) ? " included" : ""}`}, buildingCheckbox(monitor, "desktop"), element("button", {
+    class: `monitor-card${monitoringScope(monitor, value.searches).general ? " watching" : ""}${monitor.id === selectedId ? " selected" : ""}`,
     "aria-pressed": String(monitor.id === selectedId),
     onclick: () => selectLocation(monitor.id),
   },
   element("span", {class: "monitor-title"}, monitor.name),
-  element("span", {class: "monitor-bottom"}, element("span", {class: "pill"}, monitor.error ? "Check failed" : monitoringScope(monitor, value.searches).general ? "General monitoring on" : monitor.enabled ? "Profile searches only" : "Off"), resultStatus(monitor).label),
+  element("span", {class: "monitor-bottom"}, element("span", {class: `building-card-result ${resultStatus(monitor).kind}`}, resultStatus(monitor).label), monitoringScope(monitor, value.searches).general && element("span", {class: "monitoring-indicator"}, "● Monitoring")),
   element("span", {class: "freshness", "data-freshness": monitor.id}),
 
-  )));
+  ))));
+  $('#mobile-check-selection-summary').textContent = `Choose buildings · ${included.length} of ${value.monitors.length}`;
+  $('#mobile-check-options').replaceChildren(...value.monitors.map(monitor => element('label', {class: 'checkbox-label'}, buildingCheckbox(monitor, 'mobile'), monitor.name)));
+  if (focusedCheckbox) document.querySelector(`[data-check-building-id="${focusedCheckbox}"][data-check-picker="${focusedPicker}"]`)?.focus({preventScroll: true});
   if (!value.monitors.length) $("#monitors").append(element("p", {class: "empty-note"}, "No supported websites are available."));
   renderDetail();
   updateFreshness();
@@ -206,6 +258,7 @@ function renderDetail() {
   const monitor = selected();
   const root = $("#detail");
   const diagnosticsOpen = root.querySelector('.application-diagnostics')?.open;
+  const applicationTraceOpen = root.querySelector('.application-technical')?.open;
   const optionsOpen = root.querySelector('.monitor-options')?.open;
   const focusedAction = root.contains(document.activeElement) ? document.activeElement.dataset.action : null;
   root.replaceChildren();
@@ -213,17 +266,12 @@ function renderDetail() {
     root.append(element("div", {class: "empty-state"}, element("h2", {}, "Select a website")));
     return;
   }
-  root.append(element("div", {class: "detail-head"},
-    element("div", {class: "detail-title"}, element("h2", {}, monitor.name))));
-  root.append(element("button", {class: "text-button detail-url", title: monitor.url, onclick: guard(() => request({type: "open", id: monitor.id}))}, "Open location website ↗"));
   const scope = monitoringScope(monitor, value.searches);
-  const scopeRow = element('section', {class: 'monitor-scope', 'aria-label': 'Monitoring scope'},
-    element('div', {}, element('strong', {}, `General monitoring · ${scope.general ? 'On' : 'Off'}`), element('p', {class: 'helper'}, scope.searches.length ? `${scope.searches.length} active profile ${scope.searches.length === 1 ? 'search shares' : 'searches share'} this location. Stopping general monitoring leaves them running.` : 'No active profile searches use this location.')),
-    actionButton(scope.general ? 'Stop general monitoring' : 'Start general monitoring', scope.general ? 'pause' : 'start', monitor, scope.general ? 'danger-button' : 'secondary-button'));
-  if (scope.searches.length) scopeRow.append(element('button', {class: 'text-button', onclick: () => switchTab('searches')}, 'Manage profile searches →'));
-  root.append(scopeRow);
-  const toolbar = element('div', {class: 'control-row monitor-toolbar'}, actionButton(busy(monitor) ? 'Checking…' : '↻ Check now', 'check', monitor, 'primary-button'));
-  if (busy(monitor)) toolbar.append(actionButton('Cancel check', 'cancel-check', monitor));
+  const controlPanel = element('section', {class: 'building-control-panel', 'aria-label': 'Building controls'});
+  const controlHeading = element('div', {class: 'building-control-heading'}, element('h3', {}, monitor.name));
+  const toolbar = element('div', {class: 'building-action-row'});
+  controlPanel.append(controlHeading, toolbar);
+  root.append(controlPanel);
   const refresh = element("select", {id: "refresh-interval", "aria-label": "Refresh interval"});
   const presets = [[5, "5 seconds"], [30, "30 seconds"], [60, "1 minute"], [300, "5 minutes"], [600, "10 minutes"], [1800, "30 minutes"], [3600, "1 hour"]];
   if (!presets.some(([seconds]) => seconds === monitor.intervalSeconds)) presets.push([monitor.intervalSeconds, `${monitor.intervalSeconds} seconds`]);
@@ -240,29 +288,34 @@ function renderDetail() {
   options.open = Boolean(optionsOpen);
   options.append(element("div", {class: "monitor-options-content"}, element("label", {class: "refresh-control"}, "Refresh every", refresh), element("button", {id: "configure-monitor", class: "small-button", onclick: () => { options.open = false; openEditor(monitor); }}, "Configure monitor")));
   options.addEventListener("keydown", event => { if (event.key === "Escape") { options.open = false; options.querySelector("summary").focus(); } });
-  toolbar.append(options);
-  root.append(toolbar);
+  toolbar.append(element("div", {class: "building-secondary-actions"}, element("button", {class: "text-button detail-url", title: monitor.url, onclick: guard(() => request({type: "open", id: monitor.id}))}, "Open website ↗"), options));
   if (monitor.application?.message) {
     const app = monitor.application;
     if (app.status === 'running') root.append(element('div', {class: 'application-progress', role: 'status'}, element('span', {}, `Application in progress · ${app.stage || 'Preparing'}…`), actionButton('Cancel application', 'stop-application', monitor)));
 
-    const details = element("details", {class: "application-diagnostics", "data-application-build": APPLICATION_BUILD}, element("summary", {}, "Application diagnostics"));
+    const details = element("details", {class: "application-diagnostics", "data-application-build": APPLICATION_BUILD}, element("summary", {}, "Application activity"));
     details.open = !!diagnosticsOpen;
     const report = applicationReport(app);
+    details.append(element('p', {class: 'helper'}, `Last application attempt for ${monitor.name}${app.applicantName ? ` · ${app.applicantName}` : ''}${app.listingName ? ` · ${app.listingName}` : ''}${app.updatedAt ? ` · ${new Date(app.updatedAt).toLocaleString()}` : ''}. Separate from availability checks.`));
     details.append(element("p", {class: "helper application-result"}, app.message));
     if (app.moveInDate) details.append(element("p", {class: "helper move-in-feedback"}, `Move-in date: ${app.moveInDate}`));
-    details.append(element("p", {class: "helper"}, `Dashboard build ${APPLICATION_BUILD} · Run build ${report.build} · ${report.status}${report.kind ? ` (${report.kind})` : ""}`));
+    const traceDetails = element("details", {class: "application-technical"}, element("summary", {}, "Technical trace & report"));
+    traceDetails.open = !!applicationTraceOpen;
+    traceDetails.append(element("p", {class: "helper"}, `Dashboard build ${APPLICATION_BUILD} · Run build ${report.build} · ${report.status}${report.kind ? ` (${report.kind})` : ""}`));
     if (app.build !== APPLICATION_BUILD) details.append(element("p", {class: "form-error"}, "This run used an older build. Reload SpotAlert at chrome://extensions, reopen the dashboard, and try Apply again."));
     const list = element("ol", {class: "application-trace"});
     for (const item of report.trace) {
       const {at, event, ...metadata} = item;
       list.append(element("li", {}, `${clock(at)} · ${event.replaceAll("-", " ")}`, Object.keys(metadata).length ? element("code", {}, JSON.stringify(metadata)) : ""));
     }
-    details.append(list, element("div", {class: "control-row"}, app.tabId ? element("button", {type: "button", class: "secondary-button", onclick: guard(() => request({type: "open-application-tab", id: monitor.id}))}, "Open application tab ↗") : "", element("button", {type: "button", class: "secondary-button", onclick: () => {
+    traceDetails.append(list, element("div", {class: "control-row"}, app.tabId ? element("button", {type: "button", class: "secondary-button", onclick: guard(() => request({type: "open-application-tab", id: monitor.id}))}, "Open application tab ↗") : "", element("button", {type: "button", class: "secondary-button", onclick: () => {
       const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], {type: "application/json"}));
       element("a", {href: url, download: "spotalert-application-debug.json"}).click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }}, "Download debug report")));
+    const openApplication = traceDetails.querySelector('button');
+    if (app.tabId && openApplication) details.append(openApplication);
+    details.append(traceDetails);
     root.append(details);
   }
 
@@ -320,20 +373,23 @@ function renderDetail() {
   let caption = "Monitoring paused";
   let symbol = "Ⅱ";
   let sub = "";
-  if (busy(monitor)) { caption = monitor.phase === "capturing" ? "Capturing application page…" : monitor.phase === "reading" ? "Reading availability elements…" : monitor.phase === "queued" ? "Waiting for the previous check…" : "Refreshing browser tab…"; symbol = "↻"; sub = ""; }
+  if (busy(monitor)) { caption = monitor.readMethod === "background" ? "Fetching listing data in background…" : monitor.phase === "capturing" ? "Capturing application page…" : monitor.phase === "reading" ? "Reading availability elements…" : monitor.phase === "queued" ? "Waiting for the previous check…" : "Refreshing browser tab…"; symbol = "↻"; sub = ""; }
   else if (monitor.error) { caption = {verification: "Verification required", login: "Sign in required", loading: "Page still loading", selector: "Rule needs updating", permission: "Website access required", navigation: "Tab navigated away"}[monitor.errorKind] || "The last check failed"; symbol = "!"; sub = monitor.enabled ? `Retry scheduled after ${monitor.consecutiveErrors || 1} failed ${monitor.consecutiveErrors === 1 ? "check" : "checks"}.` : "Fix the rule or page access, then try again."; }
   else if (monitor.phase === "waiting-hours" && monitor.enabled) { caption = "Waiting for monitoring hours"; symbol = "◷"; }
   else if (monitor.enabled) { caption = "Watching for availability"; symbol = "✓"; sub = ""; }
   const statusRow = element("div", {class: "monitor-status telemetry", role: "status"});
   root.setAttribute("aria-busy", String(busy(monitor)));
   if (busy(monitor) || (monitor.phase === "waiting-hours" && monitor.enabled)) statusRow.append(element("span", {class: `activity-caption${busy(monitor) ? " spinning" : ""}`}, caption));
-  if (monitor.lastCheckedAt) statusRow.append(element("span", {class: "freshness", "data-freshness": monitor.id}));
-  if (monitor.enabled) statusRow.append(element("span", {}, "Next check ", element("span", {"data-next": monitor.id}, nextLabel(monitor))));
+  if (monitor.lastCheckedAt && !resultStatus(monitor).historical) statusRow.append(element("span", {class: "freshness", "data-freshness": monitor.id}));
+  if (scope.general) statusRow.append(element("span", {}, "Next check ", element("span", {"data-next": monitor.id}, nextLabel(monitor))));
   const resultsState = resultStatus(monitor);
   if (!busy(monitor)) statusRow.append(element('strong', {class: `result-status ${resultsState.kind}`}, resultsState.label));
-  if (resultsState.historical && monitor.samples.length) statusRow.append(element('span', {class: 'helper'}, 'Showing previous results; availability is unconfirmed.'));
-  root.append(statusRow);
+  if (resultsState.historical && monitor.samples.length) statusRow.append(element('span', {class: 'helper'}, `Previous results${monitor.lastCheckedAt ? ` from ${new Date(monitor.lastCheckedAt).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}` : ''}; availability unconfirmed.`));
+
+  controlHeading.append(statusRow);
   const technical = element("details", {class: "technical-details"}, element("summary", {}, "Technical details & activity"));
+  if (monitor.readFallbackReason) technical.append(element('p', {class: 'helper read-fallback'}, `Browser fallback: ${monitor.readFallbackReason}. Background requests retry after ${monitor.backgroundRetryAt ? new Date(monitor.backgroundRetryAt).toLocaleTimeString() : 'the cooldown'}.`));
+  if (monitor.readMethod) technical.prepend(element('p', {class: 'helper read-method'}, monitor.readMethod === 'background' ? 'Background check' : 'Browser check'));
   technical.open = technicalOpen;
   technical.addEventListener("toggle", () => { technicalOpen = technical.open; });
   technical.append(element("section", {class: "detail-section"},
@@ -343,7 +399,7 @@ function renderDetail() {
       `Case insensitive · Every ${interval(monitor.intervalSeconds)}`)),
   ));
   const sampleSection = element("section", {class: "detail-section"});
-  const sampleHeader = element("div", {class: "section-heading"}, element("h3", {}, `Floor plans ${monitor.samples.length ? `· ${monitor.samples.filter((sample) => sample.included !== false).length}/${monitor.samples.length}` : ""}`));
+  const sampleHeader = element("div", {class: "section-heading"}, element("h3", {}, `Floor plans ${monitor.samples.length ? `· ${monitor.samples.filter((sample) => sample.included !== false).length}` : ""}`));
   const visibleSamples = [...monitor.samples].filter(sample => listingFilter === "all" || (listingFilter === "available" ? sample.matched : sample.apartmentType === listingFilter))
     .sort((a, b) => Number(Boolean(b.matched)) - Number(Boolean(a.matched)) || a.index - b.index);
   if (visibleSamples.length > 8) sampleHeader.append(element("button", {class: "text-button", onclick: () => { showAllSamples = !showAllSamples; renderDetail(); }}, showAllSamples ? "Show fewer" : `Show all ${visibleSamples.length}`));
@@ -382,6 +438,10 @@ function renderDetail() {
   ))));
   technical.append(historySection);
   root.append(technical);
+  let applicationActivity = root.querySelector('.application-diagnostics');
+  if (!applicationActivity) applicationActivity = element('details', {class: 'application-diagnostics'}, element('summary', {}, 'Application activity'), element('p', {class: 'helper'}, 'No application attempt recorded for this building. Availability checks do not create an application.'));
+  applicationActivity.open = !!diagnosticsOpen;
+  root.append(applicationActivity);
 
   updateFreshness();
   if (focusedAction) root.querySelector(`[data-action="${focusedAction}"]`)?.focus({preventScroll: true});
@@ -632,6 +692,13 @@ $("#clear-personal").addEventListener("click", guard(async () => {
 }));
 $("#open-extension-settings").addEventListener("click", guard(() => chrome.tabs.create({url: "chrome://extensions"})));
 $("#reload-dashboard").addEventListener("click", () => location.reload());
+$('#reload-extension').addEventListener('click', guard(() => {
+  if (personalDirty) { toast('Save your profile changes before reloading the extension.', true); return; }
+  const button = $('#reload-extension');
+  button.disabled = true;
+  button.textContent = 'Reloading…';
+  chrome.runtime.reload();
+}));
 async function checkExtensionVersion() {
   try {
     const info = await request({type: "engine-info"});
@@ -658,7 +725,7 @@ $("#stop-all").addEventListener("click", guard(async () => {
 $("#compact-view").addEventListener("change", guard(async () => {
   compactView = $("#compact-view").checked;
   document.body.classList.toggle("compact", compactView);
-  await chrome.storage.local.set({[UI_KEY]: {compact: compactView}});
+  await saveUiPreferences({compact: compactView});
 }));
 
 function renderDebug() {
@@ -850,3 +917,23 @@ window.addEventListener("unhandledrejection", event => {
   rememberError("dashboard-promise", event.reason);
   toast(`Dashboard action failed: ${diagnosticText(event.reason?.message || event.reason)}`, true);
 });
+
+$('#check-all-buildings').addEventListener('click', guard(async () => {
+  $('#check-all-buildings').disabled = true;
+  try { await request({type: 'check-all', ids: value.monitors.filter(monitor => checkBuildingIds.has(monitor.id)).map(monitor => monitor.id)}); } finally { await loadState(); }
+}));
+$('#cancel-all-checks').addEventListener('click', guard(async () => {
+  $('#cancel-all-checks').disabled = true;
+  $('#cancel-all-checks').textContent = 'Cancelling…';
+  try { await request({type: 'cancel-all-checks'}); } finally { $('#cancel-all-checks').disabled = false; $('#cancel-all-checks').textContent = 'Cancel checks'; await loadState(); }
+}));
+
+$('#monitor-selected-buildings').addEventListener('click', guard(async () => {
+  const included = value.monitors.filter(monitor => checkBuildingIds.has(monitor.id));
+  if (!included.length || changingSelectedMonitoring) return;
+  const enabled = !included.every(monitor => monitoringScope(monitor, value.searches).general);
+  changingSelectedMonitoring = true;
+  render();
+  try { await request({type: 'set-buildings-monitoring', ids: included.map(monitor => monitor.id), enabled}); }
+  finally { changingSelectedMonitoring = false; await loadState(); }
+}));

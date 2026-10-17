@@ -3,6 +3,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from browser_helpers import select_building_for_actions
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +16,7 @@ def main():
         context = p.chromium.launch_persistent_context(profile, channel='chromium', headless=True, args=[f'--disable-extensions-except={extension}', f'--load-extension={extension}'], ignore_default_args=['--disable-extensions'])
         try:
             worker = context.service_workers[0] if context.service_workers else context.wait_for_event('serviceworker')
+            worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
             worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profile folder disabled in isolated tests');};}")
             fixture = '''<html><title>Canvas Rotterdam Blaak</title><body>
             <div id="FP_Detail_501"><h2 data-selenium-id="FloorPlanName">1 Bedroom Executive</h2><table><tr><td data-selenium-id="Bed_1">1</td><td data-selenium-id="Bath_1">1</td><td data-selenium-id="Rent_1">€ 1.724 -to € 1.733</td><td data-selenium-id="Apply_1"><a data-selenium-id="ApplyNow" href="availableunits.aspx?myFloorPlanId=501">Check availability</a></td></tr></table></div>
@@ -50,7 +52,8 @@ def main():
             panel.get_by_role("tab", name="Locations", exact=True).click()
             expect(panel.locator('#monitor-count')).to_have_text('3')
             panel.get_by_role('button', name='Canvas · Rotterdam Blaak', exact=False).click()
-            panel.get_by_role('button', name='↻ Check now', exact=True).click()
+            select_building_for_actions(panel)
+            panel.get_by_role('button', name='Check now', exact=True).click()
             expect(panel.locator('#availability-listings')).to_contain_text('1 Bedroom Executive', timeout=30000)
             panel.locator('#dismiss-availability').click()
             expect(panel.locator('.sample')).to_have_count(2)

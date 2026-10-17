@@ -28,3 +28,19 @@ def test_profile_host_rejects_symlink_file(tmp_path):
     (tmp_path / 'profiles.json').symlink_to(target)
     with pytest.raises(ValueError):
         handle({'command': 'read'}, tmp_path)
+
+
+def test_pending_import_is_only_consumed_after_profiles_are_preserved(tmp_path):
+    existing = {'id': 'real', 'name': 'Existing applicant', 'details': {'email': 'real@example.com'}}
+    added = {'id': 'test-email', 'name': 'Fictional applicant', 'testProfile': True, 'details': {'email': 'test@example.com'}}
+    pending = {'activeId': added['id'], 'profiles': [added]}
+    (tmp_path / 'pending-import.json').write_text(json.dumps(pending))
+    result = handle({'command': 'read'}, tmp_path)
+    assert result['library'] is None
+    assert result['pendingLibrary'] == pending
+    handle({'command': 'write', 'library': {'activeId': 'real', 'profiles': [existing]}}, tmp_path)
+    assert (tmp_path / 'pending-import.json').exists(), 'An unrelated save must not drop a queued applicant'
+    merged = {'activeId': 'real', 'profiles': [existing, added]}
+    handle({'command': 'write', 'library': merged}, tmp_path)
+    assert not (tmp_path / 'pending-import.json').exists()
+    assert handle({'command': 'read'}, tmp_path)['library'] == merged

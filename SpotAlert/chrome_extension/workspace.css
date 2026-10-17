@@ -104,13 +104,7 @@ input::placeholder, textarea::placeholder { color: #91a497; }
 .monitor-card.watching { background: #1b2d21; }
 .monitor-card.watching.selected { box-shadow: none; }
 .detail { padding: 0; border: 0; }
-.detail-head { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .detail-url { font-size: 12px; margin: 0 0 12px; }
-.monitor-toolbar { max-width: none; display: flex; gap: 10px; align-items: center; padding: 0; box-shadow: none; border: 0; border-radius: 0; background: var(--bg); }
-.monitor-toolbar > button { flex: 0 0 auto; }
-.monitor-toolbar > .refresh-control { margin: 0 0 0 auto; font-size: 11px; gap: 8px; }
-.monitor-toolbar .refresh-control select { font-size: 12px; min-height: 40px; }
-.monitor-toolbar #configure-monitor { font-size: 12px; }
 .monitor-status.telemetry { display: flex; flex-wrap: wrap; gap: 8px 20px; max-width: none; margin: 14px 0 24px; color: var(--muted); font-size: 12px; }
 .monitor-status .activity-caption { color: var(--ink); font-weight: 500; }
 .monitor-status span { font-size: inherit; margin: 0; }
@@ -194,7 +188,6 @@ body:has(#personal-view:not([hidden])) .toast { bottom: 80px; }
 @media (max-width: 959px) {
   .search-card { grid-template-columns: minmax(0,1fr); grid-template-areas: 'heading' 'criteria' 'meta' 'actions'; }
   .search-card-bottom { margin-top: 10px; justify-content: space-between; }
-  .monitor-toolbar { flex-wrap: wrap; }
   .profile-unified-header { grid-template-columns: 40px minmax(0,1fr); }
   .profile-unified-header .client-overview { grid-column: 2; }
 }
@@ -220,12 +213,7 @@ body:has(#personal-view:not([hidden])) .toast { bottom: 80px; }
   .watchlist { display: none; }
   .location-heading > span { display: none; }
   .mobile-location-picker { display: block; margin: 0 0 18px; font-size: 12px; }
-  .monitor-toolbar { gap: 8px; }
   .monitor-options { flex: 0 0 auto; }
-  .monitor-toolbar > button { flex: 0 0 auto; font-size: 12px; padding: 8px; }
-  .monitor-toolbar > .refresh-control { margin: 0; flex: 1; min-width: 0; }
-  .monitor-toolbar .refresh-control select { width: 100%; min-width: 0; }
-  .monitor-toolbar > #configure-monitor { flex: 0 0 auto; }
   .monitor-status.telemetry { gap: 6px 12px; margin-bottom: 20px; }
   .sample-grid { grid-template-columns: minmax(0,1fr); }
   .sample-top { flex-wrap: wrap; }
@@ -245,11 +233,85 @@ body:has(#personal-view:not([hidden])) .toast { bottom: 80px; }
 .toast.error { max-height: 50vh; overflow: auto; overflow-wrap: anywhere; }
 .toast.error button { margin-left: 12px; }
 
-.monitor-scope { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 16px; margin: 0 0 18px; border: 1px solid var(--border, #344c40); border-radius: 10px; }
-.monitor-scope > div { flex: 1 1 240px; }
-.monitor-scope p { margin: 6px 0 0; }
 .scope-explainer { max-width: 760px; margin: -4px 0 20px; }
 .search-result-state { margin: 8px 0 0; color: #b5c8bd; font-size: 12px; }
 .result-status.failed, .result-status.outdated { color: #edca83; }
 
 .application-progress { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+
+#reload-extension { padding: 8px 10px; font-size: 12px; white-space: nowrap; }
+@media (max-width: 719px) { .app-header { height: auto; min-height: 64px; flex-wrap: wrap; gap: 8px; padding: 12px 14px; } }
+
+.location-heading { justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 14px; }
+.location-heading h2 { margin: 0; }
+.location-heading .helper { margin: 8px 0 0; }
+.building-check-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+#check-all-buildings { width: auto; white-space: nowrap; }
+#building-check-progress { margin: 0 0 18px; }
+.application-diagnostics { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 16px; }
+.application-diagnostics > summary { font-size: 13px; cursor: pointer; }
+.application-technical { margin-top: 16px; }
+.application-technical > summary { cursor: pointer; font-size: 12px; }
+@media (max-width: 719px) { .location-heading { flex-wrap: wrap; } .building-check-actions { width: 100%; } }
+
+
+/* One building, one status line, one row of actions. */
+.location-heading { align-items: flex-start; margin-bottom: 22px; }
+.location-heading h2 { padding-top: 6px; }
+.building-check-group { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 50%; }
+.building-check-group #building-check-progress { margin: 0; font-size: 11px; text-align: right; }
+.building-control-panel { padding: 20px; margin: 0 0 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.building-control-heading h3 { font-size: 16px; line-height: 1.4; }
+.building-control-panel .monitor-status.telemetry { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 7px 0 18px; font-size: 12px; }
+.building-control-panel .monitor-status .helper { margin: 0; }
+.building-control-panel .monitor-status .result-status { order: -1; }
+.building-action-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+.building-main-actions, .building-secondary-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.building-main-actions > button { min-height: 40px; padding: 9px 14px; font-size: 12px; white-space: nowrap; }
+.building-secondary-actions .detail-url { margin: 0; font-size: 12px; }
+.building-secondary-actions .monitor-options { margin: 0; }
+.monitor-bottom { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; justify-content: space-between; }
+.monitoring-indicator { color: var(--mint); font-size: 10px; }
+.building-card-result.failed, .building-card-result.outdated { color: #edca83; }
+.monitor-card.selected { border-color: var(--mint); }
+#location-overview { margin: 22px 0 0; padding-top: 16px; border-top: 1px solid var(--line); }
+@media (max-width: 719px) {
+  .location-heading { align-items: center; gap: 12px; margin-bottom: 18px; }
+  .location-heading h2 { padding: 0; }
+  .building-check-group { max-width: 100%; align-items: flex-start; }
+  .building-check-group #building-check-progress { text-align: left; }
+  .building-control-panel { padding: 14px; border-radius: 10px; }
+  .building-control-heading h3 { font-size: 14px; }
+  .building-main-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px; }
+  .building-main-actions > button { min-width: 0; padding: 9px 6px; font-size: 11px; }
+  .building-main-actions > button:last-child:nth-child(3) { grid-column: 1 / -1; }
+  .building-secondary-actions { width: 100%; justify-content: space-between; }
+}
+
+/* Batch inclusion and the building being viewed are separate controls. */
+.monitor-choice { position: relative; min-width: 0; }
+.monitor-choice > input { position: absolute; left: 14px; top: 15px; z-index: 1; width: 18px; height: 18px; margin: 0; accent-color: var(--mint); cursor: pointer; }
+.monitor-choice .monitor-card { width: 100%; height: 100%; padding-left: 44px; }
+.monitor-choice:not(.included) .monitor-card:not(.selected) { border-style: dashed; }
+.mobile-check-selection { display: none; }
+.building-control-panel .monitor-status.telemetry { align-items: center; line-height: 1.5; }
+.building-control-panel .monitor-status.telemetry > * { margin: 0; line-height: inherit; }
+.building-control-panel .monitor-status.telemetry .freshness { display: inline; margin: 0; padding: 0; }
+@media (max-width: 719px) {
+  .mobile-check-selection { display: block; margin: 0 0 16px; font-size: 12px; }
+  .mobile-check-selection > summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
+  #mobile-check-options { margin-top: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+  #mobile-check-options label { display: flex; gap: 10px; align-items: center; font-size: 12px; padding: 8px 0; margin: 0; }
+  #mobile-check-options input { flex: 0 0 18px; width: 18px; height: 18px; margin: 0; }
+}
+
+.building-selection-count { font-size: 12px; color: var(--muted); }
+.building-check-actions > button { min-height: 40px; white-space: nowrap; }
+.building-control-panel .building-action-row { justify-content: flex-end; margin-top: 10px; }
+.building-control-panel .monitor-status.telemetry { margin-bottom: 0; }
+@media (max-width: 719px) {
+  .building-check-group { width: 100%; }
+  .building-check-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px; }
+  .building-check-actions > button { min-width: 0; padding: 9px 6px; font-size: 12px; }
+  #cancel-all-checks { grid-column: 1 / -1; }
+}

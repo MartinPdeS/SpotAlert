@@ -1,3 +1,4 @@
+import {readBackground, BACKGROUND_RETRY_MS} from './background-reader.js';
 import {createTestProfile} from "./test-profiles.js";
 import {createProfileStore} from "./profile-store.js";
 import {createScheduler} from "./scheduler.js";
@@ -18,6 +19,7 @@ import {readPage, inspectReadState} from "./page.js";
 export function createEngine(api, now = () => Date.now(), timers = globalThis) {
   let writes = Promise.resolve();
   let checks = Promise.resolve();
+  let batchCheck = null;
   const running = new Map();
   const debugRuns = new Map();
   const applications = new Map();
@@ -111,6 +113,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
   }
   async function initialize() {
     await mutate((value) => {
+      if (value.checkBatch?.status === 'running') Object.assign(value.checkBatch, {status: 'interrupted', currentId: null, finishedAt: now()});
       value.searches ||= [];
       // Profile preferences are authoritative; retire copied search overrides.
       for (const search of value.searches) delete search.preferences;
@@ -208,7 +211,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       const monitor = {
         ...existing, ...config,
         enabled: false, phase: "paused", available: null, samples: [], error: null, errorKind: null, consecutiveErrors: 0,
-        pendingArrivals: [], alert: null,
+        pendingArrivals: [], alert: null, backgroundRetryAt: null, readFallbackReason: null, readMethod: null,
         nextCheckAt: null, tabId: existing?.url === config.url ? existing.tabId : null,
         lastCheckedAt: null, lastDurationMs: null,
         generation: crypto.randomUUID(),
@@ -218,8 +221,8 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       return monitor.id;
     });
   }
-  async function setEnabled(id, enabled) {
-    const transition = await mutate(value => {
+  async function changeMonitoring(ids, enabled) {
+    const transitions = await mutate(value => ids.map(id => {
       const monitor = find(value, id);
       const profileActive = value.searches?.some(search => search.enabled && search.locationIds.includes(id));
       const wasEnabled = monitor.enabled;
@@ -229,10 +232,20 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
         monitor.phase = 'paused'; monitor.nextCheckAt = null; monitor.generation = crypto.randomUUID();
       }
       history(monitor, {kind: enabled ? 'started' : 'paused', message: enabled ? 'General monitoring started.' : profileActive ? 'General monitoring stopped. Profile searches continue.' : 'General monitoring stopped. The browser tab stays open.'});
-      return {enabled: monitor.enabled, start: monitor.enabled && !wasEnabled};
-    });
-    if (!transition.enabled) { clearFastTimer(id); cancel(id); await api.alarms.clear(alarmName(id)); }
+      return {id, enabled: monitor.enabled, start: monitor.enabled && !wasEnabled};
+    }));
+    for (const transition of transitions) if (!transition.enabled) { clearFastTimer(transition.id); cancel(transition.id); await api.alarms.clear(alarmName(transition.id)); }
+    return transitions;
+  }
+  async function setEnabled(id, enabled) {
+    const [transition] = await changeMonitoring([id], enabled);
     if (transition.start) return check(id, true);
+  }
+  async function selectedBuildings(requested) {
+    const monitors = (await state()).monitors;
+    const ids = requested === undefined ? monitors.map(monitor => monitor.id) : requested;
+    if (!Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== 'string' || !monitors.some(monitor => monitor.id === id))) throw new Error('Select at least one supported building.');
+    return monitors.filter(monitor => ids.includes(monitor.id)).map(monitor => monitor.id);
   }
   async function cancelCheck(id) {
     clearFastTimer(id); cancel(id); await api.alarms.clear(alarmName(id));
@@ -247,7 +260,46 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     if (active) await schedule(id, now() + (await state()).monitors.find(item => item.id === id).intervalSeconds * 1000);
     return state();
   }
+  function checkAll(ids) {
+    if (batchCheck) return batchCheck.promise;
+    const batch = {cancelled: false, currentId: null};
+    batchCheck = batch;
+    batch.promise = (async () => {
+      await mutate(value => { value.checkBatch = {status: 'running', locationIds: ids, total: ids.length, completed: 0, failed: 0, currentId: null, startedAt: now()}; });
+      try {
+        for (const id of ids) {
+          if (batch.cancelled) break;
+          batch.currentId = id;
+          await mutate(value => { value.checkBatch.currentId = id; });
+          if (batch.cancelled) break;
+          try { await check(id); }
+          catch (error) {
+            await mutate(value => { const monitor = find(value, id); monitor.error = siteError(monitor, error); monitor.errorKind = errorKind(error); monitor.phase = 'error'; history(monitor, {kind: 'error', message: monitor.error}); });
+          }
+          if (batch.cancelled) break;
+          await mutate(value => {
+            value.checkBatch.completed++;
+            if (find(value, id).error) value.checkBatch.failed++;
+          });
+        }
+      } finally {
+        await mutate(value => { Object.assign(value.checkBatch, {status: batch.cancelled ? 'cancelled' : 'completed', currentId: null, finishedAt: now()}); });
+        batchCheck = null;
+      }
+      return state();
+    })();
+    return batch.promise;
+  }
+  async function cancelAllChecks() {
+    if (batchCheck) {
+      batchCheck.cancelled = true;
+      if (batchCheck.currentId) await cancelCheck(batchCheck.currentId);
+      await batchCheck?.promise;
+    }
+    return state();
+  }
   async function stopAll() {
+    if (batchCheck) batchCheck.cancelled = true;
     await mutate(value => { for (const search of value.searches || []) { search.enabled = false; search.generation = crypto.randomUUID(); } });
     await Promise.all([...new Set([...applications.keys(), ...(await state()).monitors.filter(m => m.application?.status === "running").map(m => m.id)])].map(id => stopApplication(id)));
     await mutate(async (value) => {
@@ -399,14 +451,29 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       if (!(await api.permissions.contains({origins: [sitePattern(monitor.url)]}))) {
         throw new Error("Website access is missing. Edit this monitor and save it to grant access again.");
       }
-      const tab = await tabFor(monitor, controller.signal);
+      let result;
+      let fallback = monitor.backgroundRetryAt > now() ? monitor.readFallbackReason || 'Background retry cooldown' : null;
+      if (!fallback) {
+        await patchRun(id, generation, current => { current.readMethod = 'background'; });
+        const attempt = await readBackground(api, monitor, controller.signal);
+        result = attempt.result;
+        fallback = attempt.fallback;
+      }
       if (controller.signal.aborted) return;
-      await patchRun(id, generation, (current) => { current.tabId = tab.id; });
-      // A newly created tab is still loading; an existing complete tab is refreshed.
-      await waitForPage(tab.id, controller.signal, tab.status === "complete");
-      if (controller.signal.aborted) return;
-      await patchRun(id, generation, (current) => { current.phase = "reading"; });
-      const result = await executeRead(tab.id, monitor.rule, 12000, controller.signal);
+      await patchRun(id, generation, current => {
+        current.readMethod = result ? 'background' : 'browser';
+        current.readFallbackReason = result ? null : fallback;
+        current.backgroundRetryAt = result ? null : monitor.backgroundRetryAt > now() ? monitor.backgroundRetryAt : now() + BACKGROUND_RETRY_MS;
+      });
+      if (!result) {
+        const tab = await tabFor(monitor, controller.signal);
+        if (controller.signal.aborted) return;
+        await patchRun(id, generation, current => { current.tabId = tab.id; });
+        await waitForPage(tab.id, controller.signal, tab.status === 'complete');
+        if (controller.signal.aborted) return;
+        await patchRun(id, generation, current => { current.phase = 'reading'; });
+        result = await executeRead(tab.id, monitor.rule, 12000, controller.signal);
+      }
       if (!samePage(result.url, monitor.url)) throw new Error("The tab navigated away from the saved URL. Check login or update the monitor URL.");
       const evaluated = evaluateRule(result.samples, monitor.rule, monitor.filters);
       if (controller.signal.aborted) return;
@@ -427,7 +494,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
         current.consecutiveErrors = 0;
         current.phase = current.enabled ? "waiting" : "paused";
         history(current, {
-          kind: "check", available: evaluated.available, changed,
+          kind: "check", readMethod: current.readMethod, available: evaluated.available, changed,
           message: evaluated.available ? "Availability detected" : "No availability detected",
           matchedCount: evaluated.matches.filter((sample) => sample.matched).length,
           totalCount: evaluated.matches.length,
@@ -792,6 +859,15 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       case "pause":
         await setEnabled(message.id, false); return state();
       case "cancel-check": return cancelCheck(message.id);
+      case 'set-buildings-monitoring': {
+        if (typeof message.enabled !== 'boolean') throw new Error('Choose a valid monitoring status.');
+        const ids = await selectedBuildings(message.ids);
+        const transitions = await changeMonitoring(ids, message.enabled);
+        for (const transition of transitions) if (transition.start) check(transition.id, true).catch(console.error);
+        return state();
+      }
+      case 'check-all': return checkAll(await selectedBuildings(message.ids));
+      case "cancel-all-checks": return cancelAllChecks();
       case "check": await check(message.id); return state();
       case "set-interval": return setIntervalSeconds(message.id, message.intervalSeconds);
       case "preview": return preview(message.monitor);

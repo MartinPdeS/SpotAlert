@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from types import SimpleNamespace
 
+from browser_helpers import select_building_for_actions
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,12 +34,14 @@ def main():
                     ignore_default_args=["--disable-extensions"],
                 )
                 worker = browser_context.service_workers[0] if browser_context.service_workers else browser_context.wait_for_event("serviceworker")
+                worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
                 worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profiles disabled in isolated tests');};}")
                 return browser_context
 
             context = launch()
             try:
                 worker = context.service_workers[0] if context.service_workers else context.wait_for_event("serviceworker")
+                worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
                 extension_id = worker.url.split("/")[2]
                 context.route(
                     "https://thisisourdomain.securerc.co.uk/**",
@@ -75,13 +78,15 @@ def main():
                 panel.get_by_role("button", name="Save monitor", exact=True).click()
                 expect(panel.locator("#editor")).not_to_be_visible()
                 expect(panel.locator("#monitor-count")).to_have_text("3")
-                panel.get_by_role("button", name="Start general monitoring", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Start monitoring", exact=True).click()
                 expect(panel.locator("#check-count")).to_have_text("1", timeout=30000)
                 expect(panel.locator(".monitor-card.watching")).to_have_count(1)
-                expect(panel.locator(".activity-caption")).to_have_text("Watching for availability")
+                expect(panel.get_by_role("button", name="Stop monitoring", exact=True)).to_be_visible()
                 expect(panel.locator(".sample")).to_have_count(2)
                 fixture_state.available = True
-                panel.get_by_role("button", name="↻ Check now", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Check now", exact=True).click()
                 expect(panel.locator("#check-count")).to_have_text("2", timeout=30000)
                 expect(panel.locator("#available-count")).to_have_text("1")
                 expect(panel.locator("#apartment-count")).to_have_text("≥1")
@@ -110,7 +115,7 @@ def main():
                 unrelated = context.new_page()
                 unrelated.goto("about:blank")
                 unrelated.bring_to_front()
-                expect(panel.locator(".detail-title h2")).to_have_text("OurDomain · Amsterdam Diemen")
+                expect(panel.locator(".building-control-heading h3")).to_have_text("OurDomain · Amsterdam Diemen")
                 if not panel.locator(".monitor-options").evaluate("node=>node.open"):
                     panel.locator(".monitor-options > summary").click()
                 panel.get_by_role("button", name="Configure monitor", exact=True).click()
@@ -122,7 +127,8 @@ def main():
                 panel.get_by_role("button", name="Stop all", exact=True).click()
                 expect(panel.locator("#stop-all")).to_be_disabled()
                 expect(panel.locator("#active-count")).to_have_text("0")
-                panel.get_by_role("button", name="Start general monitoring", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Start monitoring", exact=True).click()
                 expect(panel.locator("#check-count")).to_have_text("3", timeout=30000)
                 # A real Chrome alarm wakes the monitoring engine, without the panel scheduling checks.
                 monitor_id = worker.evaluate("async () => (await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors[0].id")
@@ -144,7 +150,8 @@ def main():
                 panel.locator("#preview-rule").click()
                 expect(panel.locator("#preview-result")).to_contain_text("Not available · 0/1 elements matched")
                 panel.locator("#close-editor").click()
-                panel.get_by_role("button", name="↻ Check now", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Check now", exact=True).click()
                 expect(panel.locator("#check-count")).to_have_text("5", timeout=30000)
                 expect(panel.locator(".sample")).to_have_count(1)
                 expect(panel.locator(".sample-name")).to_have_text("2 Bedroom Superior")
@@ -169,7 +176,7 @@ def main():
                 panel.locator("#compact-view").check()
                 expect(panel.locator("body")).to_have_class("compact")
                 worker.evaluate("async () => { const key='spotalert.monitors.v2';const data=(await chrome.storage.local.get(key))[key];data.monitors[1].lastCheckedAt=Date.now()-1000000;await chrome.storage.local.set({[key]:data}); }")
-                expect(panel.locator(".telemetry .freshness")).to_contain_text("Stale")
+                expect(panel.locator(".telemetry .result-status")).to_have_text("Results outdated")
                 expect(panel.locator(".monitor-card").nth(1).locator(".freshness")).to_contain_text("Stale")
                 for width in [320, 390, 1280]:
                     panel.set_viewport_size({"width": width, "height": 1000})
@@ -191,9 +198,10 @@ def main():
                 expect(panel.locator("body")).to_have_class("compact")
                 expect(panel.locator("#active-count")).to_have_text("1")
                 expect(panel.locator("#check-count")).to_have_text("5")
-                panel.get_by_role("button", name="Stop general monitoring", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Stop monitoring", exact=True).click()
                 expect(panel.locator("#active-count")).to_have_text("0")
-                expect(panel.locator(".activity-caption")).to_have_text("Monitoring paused")
+                expect(panel.get_by_role("button", name="Start monitoring", exact=True)).to_be_visible()
                 expect(panel.locator(".monitor-card.watching")).to_have_count(0)
                 if not panel.locator(".monitor-options").evaluate("node=>node.open"):
                     panel.locator(".monitor-options > summary").click()
@@ -203,10 +211,12 @@ def main():
                 # Prepare the fixture before starting and close the panel during the timer wait.
                 target = context.new_page()
                 target.goto(url)
-                panel.get_by_role("button", name="Start general monitoring", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Start monitoring", exact=True).click()
                 expect(panel.locator("#check-count")).to_have_text("6", timeout=30000)
                 panel.close()
                 worker = context.service_workers[0] if context.service_workers else context.wait_for_event("serviceworker")
+                worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
                 deadline = monotonic() + 15
                 while monotonic() < deadline:
                     checks = worker.evaluate("async () => (await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors[0].checks")
@@ -217,7 +227,8 @@ def main():
                 panel = context.new_page()
                 panel.goto(f"chrome-extension://{extension_id}/panel.html")
                 panel.get_by_role("tab", name="Locations", exact=True).click()
-                panel.get_by_role("button", name="Stop general monitoring", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Stop monitoring", exact=True).click()
                 expect(panel.locator("#active-count")).to_have_text("0")
             finally:
                 context.close()

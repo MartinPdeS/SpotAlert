@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from browser_helpers import select_building_for_actions
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +75,7 @@ def main():
                     ignore_default_args=["--disable-extensions"],
                 )
                 worker = browser_context.service_workers[0] if browser_context.service_workers else browser_context.wait_for_event("serviceworker")
+                worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
                 worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profiles disabled in isolated tests');};}")
                 return browser_context
 
@@ -85,6 +87,7 @@ def main():
                 listing_page = context.new_page()
                 listing_page.goto(URL)
                 worker = context.service_workers[0] if context.service_workers else context.wait_for_event("serviceworker")
+                worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
                 worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profile folder disabled in isolated tests');};}")
                 extension_id = worker.url.split("/")[2]
                 panel = context.new_page()
@@ -99,7 +102,8 @@ def main():
                     previous_tab = panel.locator('.app-tabs [aria-selected="true"]').get_attribute("id")
                     panel.get_by_role("tab", name="Locations", exact=True).click()
                     before = int(panel.locator("#check-count").text_content())
-                    panel.get_by_role("button", name="↻ Check now", exact=True).click()
+                    select_building_for_actions(panel)
+                    panel.get_by_role("button", name="Check now", exact=True).click()
                     expect(panel.locator("#check-count")).to_have_text(str(before + 1), timeout=30000)
                     panel.locator(f"#{previous_tab}").click()
 
@@ -115,7 +119,8 @@ def main():
                     panel.get_by_role("button", name="Save monitor", exact=True).click()
                     expect(panel.locator("#editor")).not_to_be_visible()
 
-                panel.get_by_role("button", name="Start general monitoring", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Start monitoring", exact=True).click()
                 expect(panel.locator("#check-count")).to_have_text("1", timeout=30000)
                 state["a"] = True
                 check()
@@ -134,7 +139,8 @@ def main():
                 panel.locator("#preview-rule").click()
                 expect(panel.locator("#preview-result")).to_contain_text("Available · 1/2 elements matched")
                 save()
-                panel.get_by_role("button", name="Start general monitoring", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Start monitoring", exact=True).click()
                 expect(panel.locator("#check-count")).to_have_text("5", timeout=30000)
                 dismiss()
                 expect(panel.locator(".sample").filter(has_text="1 Bedroom B")).to_contain_text("Filtered out")
@@ -147,7 +153,8 @@ def main():
                 panel.locator('[name="apartment-type"][value="studio"]').uncheck()
                 panel.locator('[name="floorplan"][value="floorplan:101"]').uncheck()
                 save()
-                panel.get_by_role("button", name="Start general monitoring", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Start monitoring", exact=True).click()
                 expect(panel.locator("#check-count")).to_have_text("6", timeout=30000)
                 dismiss()
                 state["a"] = False
@@ -164,20 +171,23 @@ def main():
                 panel.screenshot(path=str(ARTIFACTS / "monitor-settings.png"))
                 save()
                 before = int(panel.locator("#check-count").text_content())
-                panel.get_by_role("button", name="Start general monitoring", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Start monitoring", exact=True).click()
                 expect(panel.locator(".activity-caption")).to_have_text("Waiting for monitoring hours")
                 expect(panel.locator("#check-count")).to_have_text(str(before))
                 check()
                 dismiss()
                 state["mode"] = "verification"
-                panel.get_by_role("button", name="↻ Check now", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Check now", exact=True).click()
                 expect(panel.locator(".attention-monitor")).to_contain_text("verification", timeout=30000)
                 expect(panel.locator(".attention-monitor")).to_contain_text("OurDomain · Amsterdam Diemen")
                 affected_id = worker.evaluate("async () => (await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors[0].tabId")
                 panel.get_by_role("button", name="Open affected tab ↗", exact=True).click()
                 assert worker.evaluate("async id => (await chrome.tabs.get(id)).active", affected_id)
                 state["mode"] = "login"
-                panel.get_by_role("button", name="↻ Check now", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Check now", exact=True).click()
                 expect(panel.locator(".attention-monitor")).to_contain_text("sign in", timeout=30000)
                 state["mode"] = "normal"
                 check()
@@ -187,7 +197,8 @@ def main():
                 panel.locator("#preview-rule").click()
                 expect(panel.locator("#form-error")).to_contain_text("Invalid CSS selector")
                 panel.locator("#close-editor").click()
-                panel.get_by_role("button", name="Stop general monitoring", exact=True).click()
+                select_building_for_actions(panel)
+                panel.get_by_role("button", name="Stop monitoring", exact=True).click()
                 expect(panel.locator("#active-count")).to_have_text("0")
                 panel.get_by_role("tab", name="Profiles", exact=True).click()
                 panel.locator(".profile-group").filter(has_text="Current housing").locator("summary").click()

@@ -1384,7 +1384,7 @@ test('Monitoring never sends general alerts, including after migrating enabled l
     await assert.rejects(restarted.dispatch({type:'set-alerts',notify:true,sound:true}), /per profile search/);
     const manifest=JSON.parse(fs.readFileSync('SpotAlert/chrome_extension/manifest.json'));
     assert.ok(!manifest.permissions.includes('notifications'));
-    assert.ok(!manifest.permissions.includes('offscreen'));
+    assert.ok(manifest.permissions.includes('offscreen'), 'Detached listing parser needs DOM_PARSER; monitoring does not use audio');
     assert.equal(manifest.content_scripts,undefined);
   } finally {globalThis.fetch=original;}
 });
@@ -1710,4 +1710,166 @@ test('Cancel check aborts a reload, retains successful results and keeps general
   assert.ok(after.nextCheckAt);
   assert.equal(api.tabs.onUpdated.listeners.size, 0);
   await engine.dispatch({type: 'pause', id});
+});
+
+function backgroundFixture(api, result) {
+  api.offscreen = {createDocument: async () => { api.parserCreated = true; }};
+  api.runtime.getContexts = async () => api.parserCreated ? [{documentUrl: api.runtime.getURL('parser.html')}] : [];
+  api.runtime.sendMessage = async message => { api.parsedHtml = message.html; return {result}; };
+}
+function htmlResponse(url, text = '<html>listing fixture</html>', status = 200) {
+  const response = new Response(text, {status, headers: {'content-type': 'text/html'}});
+  Object.defineProperty(response, 'url', {value: url});
+  return response;
+}
+
+test('background reader fetches without cache, uses a detached parser and rejects incomplete data', async () => {
+  const {readBackground} = await import('../SpotAlert/chrome_extension/background-reader.js');
+  const {api, engine, id} = await setup();
+  const monitor = (await engine.state()).monitors.find(item => item.id === id);
+  const result = {url: monitor.url, samples: [{id: 'floorplan:1', name: 'Studio', text: 'Apply Now'}]};
+  backgroundFixture(api, result);
+  let options;
+  const fetcher = async (url, config) => { options = config; return htmlResponse(url); };
+  assert.deepEqual((await readBackground(api, monitor, new AbortController().signal, fetcher)).result, result);
+  assert.equal(options.cache, 'no-store'); assert.equal(options.credentials, 'include'); assert.equal(options.redirect, 'error');
+  assert.ok(api.parserCreated && api.parsedHtml);
+  const incomplete = {...monitor, knownFloorplans: [{id: 'floorplan:missing'}]};
+  assert.match((await readBackground(api, incomplete, new AbortController().signal, fetcher)).fallback, /omits/);
+  assert.match((await readBackground(api, monitor, new AbortController().signal, async url => htmlResponse(url, '', 403))).fallback, /HTTP 403/);
+  assert.match((await readBackground(api, monitor, new AbortController().signal, async () => htmlResponse('https://other.example/'))).fallback, /changed page/);
+});
+
+test('background reader rejects oversized payloads and supports cancellation during parsing', async () => {
+  const {readBackground} = await import('../SpotAlert/chrome_extension/background-reader.js');
+  const {api, engine} = await setup(); const monitor = (await engine.state()).monitors[0];
+  backgroundFixture(api, {samples: []});
+  const oversized = await readBackground(api, monitor, new AbortController().signal, async url => htmlResponse(url, 'x'.repeat(2_000_001)));
+  assert.match(oversized.fallback, /size limit/);
+  let parsing; const started = new Promise(resolve => { parsing = resolve; });
+  api.runtime.sendMessage = () => { parsing(); return new Promise(() => {}); };
+  const controller = new AbortController();
+  const pending = readBackground(api, monitor, controller.signal, async url => htmlResponse(url));
+  await started; controller.abort();
+  await assert.rejects(pending, /cancelled/);
+});
+
+test('hybrid checks avoid tab reloads on success and use browser fallback with a cooldown', async () => {
+  const {api, engine, id} = await setup();
+  const original = globalThis.fetch;
+  const samples = [{id: 'floorplan:1', name: 'Studio', text: 'Apply Now'}];
+  backgroundFixture(api, {url: api.url, samples});
+  let requests = 0;
+  globalThis.fetch = async url => { requests++; return htmlResponse(url); };
+  try {
+    await engine.check(id);
+    let monitor = (await engine.state()).monitors[0];
+    assert.equal(monitor.readMethod, 'background'); assert.equal(monitor.available, true); assert.equal(api.reloads.length, 0);
+    api.runtime.sendMessage = async () => ({fallback: 'Direct HTML has incomplete floor plans'});
+    await engine.check(id);
+    monitor = (await engine.state()).monitors[0];
+    assert.equal(monitor.readMethod, 'browser'); assert.match(monitor.readFallbackReason, /incomplete/); assert.equal(api.reloads.length, 1);
+    const count = requests; await engine.check(id);
+    assert.equal(requests, count); assert.equal(api.reloads.length, 2);
+    assert.ok(monitor.backgroundRetryAt > 1000000);
+  } finally { globalThis.fetch = original; }
+});
+
+test('Check all covers every building once, shares duplicate requests and leaves schedules unchanged', async () => {
+  const {api, engine} = await setup();
+  // Return the URL of each selected tab rather than the default fixture's single URL.
+  const {SUPPORTED_SITES} = await import('../SpotAlert/chrome_extension/sites/index.js');
+  api.tabs.query = async ({url}) => [{id: SUPPORTED_SITES.findIndex(site => url === new URL(site.url).origin + '/*') + 10, status: 'complete', url: SUPPORTED_SITES.find(site => url === new URL(site.url).origin + '/*').url}];
+  api.scripting.executeScript = async ({target}) => [{result: {url: SUPPORTED_SITES[target.tabId - 10].url, samples: [{id: 'studio', text: 'Get Notified'}]}}];
+  const first = engine.dispatch({type: 'check-all'});
+  const second = engine.dispatch({type: 'check-all'});
+  await Promise.all([first, second]);
+  const value = await engine.state();
+  assert.equal(value.checkBatch.status, 'completed');
+  assert.equal(value.checkBatch.completed, 3);
+  assert.equal(value.checkBatch.failed, 0);
+  assert.ok(value.monitors.every(monitor => monitor.checks === 1 && !monitor.enabled));
+  assert.equal(api.reloads.length, 3);
+});
+
+test('Cancel all checks aborts the current building and skips remaining buildings', async () => {
+  const {api, engine} = await setup();
+  api.completeReload = false;
+  const pending = engine.dispatch({type: 'check-all'});
+  while (!api.reloads.length) await new Promise(resolve => setTimeout(resolve, 1));
+  await engine.dispatch({type: 'cancel-all-checks'});
+  await pending;
+  const value = await engine.state();
+  assert.equal(value.checkBatch.status, 'cancelled');
+  assert.equal(value.checkBatch.completed, 0);
+  assert.equal(api.reloads.length, 1);
+  assert.ok(value.monitors.every(monitor => !monitor.checks && !monitor.enabled));
+});
+
+test('Check all continues after a building fails and restart marks interrupted batches', async () => {
+  const {api, engine, createEngine} = await setup();
+  api.permissions.contains = async () => false;
+  await engine.dispatch({type: 'check-all'});
+  let value = await engine.state();
+  assert.equal(value.checkBatch.completed, 3);
+  assert.equal(value.checkBatch.failed, 3);
+  assert.ok(value.monitors.every(monitor => monitor.error));
+  value.checkBatch.status = 'running'; value.checkBatch.currentId = value.monitors[0].id;
+  const {STORAGE_KEY} = await import('../SpotAlert/chrome_extension/core.js');
+  api.data[STORAGE_KEY] = value;
+  const restarted = createEngine(api, () => 1000001);
+  await restarted.initialize();
+  value = await restarted.state();
+  assert.equal(value.checkBatch.status, 'interrupted');
+  assert.equal(value.checkBatch.currentId, null);
+});
+
+test('batch checking validates the requested buildings and checks only the selected subset', async () => {
+  const {api, engine} = await setup();
+  const {SUPPORTED_SITES} = await import('../SpotAlert/chrome_extension/sites/index.js');
+  api.tabs.query = async ({url}) => {
+    const index = SUPPORTED_SITES.findIndex(site => url === new URL(site.url).origin + '/*');
+    return [{id: index + 10, status: 'complete', url: SUPPORTED_SITES[index].url}];
+  };
+  api.scripting.executeScript = async ({target}) => [{result: {url: SUPPORTED_SITES[target.tabId - 10].url, samples: [{id: 'studio', text: 'Get Notified'}]}}];
+  for (const ids of [[], ['unknown'], 'all', [null]]) await assert.rejects(engine.dispatch({type: 'check-all', ids}), /Select at least one supported building/);
+  assert.equal(api.reloads.length, 0);
+  const ids = [SUPPORTED_SITES[2].id, SUPPORTED_SITES[0].id, SUPPORTED_SITES[2].id];
+  await engine.dispatch({type: 'check-all', ids});
+  const value = await engine.state();
+  assert.deepEqual(value.monitors.map(monitor => monitor.checks), [1, 0, 1]);
+  assert.equal(value.checkBatch.total, 2);
+  assert.equal(value.checkBatch.completed, 2);
+  assert.equal(api.reloads.length, 2);
+});
+
+test('shared monitoring controls start and stop only the ticked buildings', async () => {
+  const {api, engine} = await setup();
+  const ids = (await engine.state()).monitors.map(monitor => monitor.id);
+  api.completeReload = false;
+  await assert.rejects(engine.dispatch({type: 'set-buildings-monitoring', ids: [], enabled: true}), /Select at least one/);
+  await assert.rejects(engine.dispatch({type: 'set-buildings-monitoring', ids: [ids[0]], enabled: 'yes'}), /valid monitoring status/);
+  await engine.dispatch({type: 'set-buildings-monitoring', ids: [ids[0], ids[2]], enabled: true});
+  assert.deepEqual((await engine.state()).monitors.map(monitor => monitor.enabled), [true, false, true]);
+  await engine.dispatch({type: 'set-buildings-monitoring', ids: [ids[0]], enabled: false});
+  assert.deepEqual((await engine.state()).monitors.map(monitor => monitor.enabled), [false, false, true]);
+  await engine.dispatch({type: 'stop-all'});
+});
+
+test('pending local test applicants merge with existing Chrome profiles without changing the active applicant', async () => {
+  const {api, engine, createEngine} = await setup();
+  const {PROFILES_KEY} = await import('../SpotAlert/chrome_extension/profile.js');
+  api.data[PROFILES_KEY] = {activeId: 'existing', profiles: [{id: 'existing', name: 'Existing applicant', details: {email: 'real@example.com'}}]};
+  const pending = {id: 'local-test', name: 'Fictional test applicant', testProfile: true, details: {email: 'test@example.com'}};
+  let written;
+  api.runtime.sendNativeMessage = async (_, message) => message.command === 'read' ? {ok: true, folder: '/private/test-profiles', library: null, pendingLibrary: {activeId: pending.id, profiles: [pending]}} : (written = message.library, {ok: true});
+  const restarted = createEngine(api);
+  await restarted.initialize();
+  const library = await restarted.dispatch({type: 'profiles'});
+  assert.equal(library.activeId, 'existing');
+  assert.equal(library.profiles.length, 2);
+  assert.equal(library.profiles[0].details.email, 'real@example.com');
+  assert.equal(library.profiles[1].testProfile, true);
+  assert.equal(written.profiles.length, 2);
+  await engine.dispatch({type: 'stop-all'});
 });

@@ -1,21 +1,21 @@
 /** Synchronous DOM snapshots; retry waiting belongs to the background worker. */
-export function readPage(rule, _waitMs = 0, reader = {}) {
+export function readPage(rule, _waitMs = 0, reader = {}, sourceDocument = document, sourceUrl = location.href) {
   let lastCount = 0;
   try {
-    const title = document.title || "";
+    const title = sourceDocument.title || "";
     if (/just a moment|checking your browser|security verification/i.test(title)
-        || document.querySelector?.('#challenge-running, #challenge-form, .cf-challenge-running')) {
+        || sourceDocument.querySelector?.('#challenge-running, #challenge-form, .cf-challenge-running')) {
       return {error: "The website is showing a verification prompt. Open the affected tab and complete it; monitoring will retry.", errorKind: "verification"};
     }
-    if (document.querySelector?.('input[type="password"]') && /log ?in|sign ?in/i.test(title + (document.body?.innerText || "").slice(0, 1500))) {
+    if (sourceDocument.querySelector?.('input[type="password"]') && /log ?in|sign ?in/i.test(title + (sourceDocument.body?.innerText || (reader.staticSnapshot ? sourceDocument.body?.textContent : "") || "").slice(0, 1500))) {
       return {error: "The website requires a login. Open the affected tab and sign in; monitoring will retry.", errorKind: "login"};
     }
-    const elements = rule.type === "text" ? [document.body].filter(Boolean)
-      : [...document.querySelectorAll(rule.selector)];
+    const elements = rule.type === "text" ? [sourceDocument.body].filter(Boolean)
+      : [...sourceDocument.querySelectorAll(rule.selector)];
     // Site configuration identifies meaningful controls in collapsed plans.
     const applicationButtons = rule.type === 'css' && reader.includeCollapsed === true;
-    let visible = elements.filter((element) => applicationButtons || element.getClientRects().length > 0);
-    if (applicationButtons) {
+    let visible = elements.filter((element) => reader.staticSnapshot || applicationButtons || element.getClientRects().length > 0);
+    if (applicationButtons && !reader.staticSnapshot) {
       const listings = new Map();
       visible.forEach((element, index) => {
         const key = element.closest('td[data-selenium-id^="Apply_"], td[data-selenium-id^="Availability_"]')?.getAttribute("data-selenium-id") || `element-${index}`;
@@ -27,7 +27,7 @@ export function readPage(rule, _waitMs = 0, reader = {}) {
     lastCount = visible.length;
     if (visible.length > 100) return {error: `Selector matches ${visible.length} elements. Narrow it to at most 100.`, errorKind: "selector"};
     const samples = visible.map((element, index) => {
-      const text = element.innerText?.trim() || (applicationButtons ? element.textContent?.trim() : "") || "";
+      const text = element.innerText?.trim() || (applicationButtons || reader.staticSnapshot ? element.textContent?.trim() : "") || "";
       let section = element.closest('[data-selenium-id^="FProw_"]')
         || element.closest('[id^="FP_Detail_"], .accordion-inner, article, .studio-card, .floorplan, .card') || element.closest("tr");
       const nameSelector = '[data-selenium-id="FloorPlanName"], [data-selenium-id^="FPlan_"], .floor-plan-name, h2, h3';
@@ -35,7 +35,7 @@ export function readPage(rule, _waitMs = 0, reader = {}) {
       // Find its own floor-plan heading before reading the enclosing details.
       if (!section?.querySelector?.(nameSelector)) {
         let parent = element.parentElement;
-        for (let depth = 0; parent && depth < 10 && parent !== document.body; depth++, parent = parent.parentElement) {
+        for (let depth = 0; parent && depth < 10 && parent !== sourceDocument.body; depth++, parent = parent.parentElement) {
           if (parent.querySelector?.(nameSelector)) { section = parent; break; }
         }
       }
@@ -62,8 +62,8 @@ export function readPage(rule, _waitMs = 0, reader = {}) {
         || (!/['"]\s*\+/.test(action) ? action.match(/(?:window\.)?location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/)?.[1] : null);
       if (href) {
         try {
-          const candidate = new URL(href, location.href);
-          if (["https:", "http:"].includes(candidate.protocol) && candidate.origin === new URL(location.href).origin && !candidate.username && !candidate.password) applicationUrl = candidate.href;
+          const candidate = new URL(href, sourceUrl);
+          if (["https:", "http:"].includes(candidate.protocol) && candidate.origin === new URL(sourceUrl).origin && !candidate.username && !candidate.password) applicationUrl = candidate.href;
         } catch { /* JavaScript actions are opened through their actual page control. */ }
       }
       const countText = field('[data-selenium-id="FloorPlanAvailability"]') || text;
@@ -74,15 +74,15 @@ export function readPage(rule, _waitMs = 0, reader = {}) {
       const target = section?.id || control.id;
       return {
         index: index + 1, id, floorplanId, text: text.slice(0, 100000), name, rent, beds, baths, size, applicationUrl, availableCount,
-        pageUrl: target ? `${location.href.split("#")[0]}#${encodeURIComponent(target)}` : location.href,
+        pageUrl: target ? `${sourceUrl.split("#")[0]}#${encodeURIComponent(target)}` : sourceUrl,
         context: context.toLowerCase() === text.toLowerCase() ? "" : context,
       };
     });
     if (samples.length && samples.every((sample) => sample.text)) {
-      return {url: location.href, title: document.title, samples};
+      return {url: sourceUrl, title: sourceDocument.title, samples};
     }
   } catch (error) { return {error: `Invalid CSS selector: ${error.message}`, errorKind: "selector"}; }
-  if (!lastCount && document.readyState === "complete") return {error: "No listing elements matched the selector on this loaded page. Open the affected tab or update the rule.", errorKind: "selector", pending: true};
+  if (!lastCount && sourceDocument.readyState === "complete") return {error: "No listing elements matched the selector on this loaded page. Open the affected tab or update the rule.", errorKind: "selector", pending: true};
   return {error: "No readable elements matched. The listing elements are empty or the page is still loading. Monitoring will retry.", errorKind: "loading", pending: true};
 }
 

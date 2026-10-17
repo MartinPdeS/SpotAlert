@@ -17,6 +17,7 @@ def main():
             ignore_default_args=['--disable-extensions'])
         try:
             worker = context.service_workers[0] if context.service_workers else context.wait_for_event('serviceworker')
+            worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
             worker.evaluate('''() => {
               chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profiles disabled in isolated tests');};
               globalThis.emailRequests=[];

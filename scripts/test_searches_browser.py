@@ -17,6 +17,7 @@ def main():
             ignore_default_args=['--disable-extensions'])
         try:
             worker = context.service_workers[0] if context.service_workers else context.wait_for_event('serviceworker')
+            worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
             worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profiles disabled in isolated tests');};}")
             page = context.new_page()
             errors = []
@@ -42,6 +43,9 @@ def main():
               await chrome.storage.local.set({'spotalert.resend.v1':{apiKey:'test-only',enabled:false}});
             }''')
             page.get_by_role('tab', name='Searches', exact=True).click()
+            expect(page.locator('.search-card')).to_have_count(0)
+            expect(page.locator('#search-profile-filter')).to_be_enabled()
+            page.locator('#search-profile-filter').select_option('default')
             page.locator('#new-search').click()
             expect(page.locator('#search-profile-preferences')).to_contain_text('1400')
             expect(page.locator('#search-profile-preferences')).to_contain_text('30 m²')
@@ -188,6 +192,11 @@ def main():
             expect(page.locator('.search-card')).to_contain_text('Bea Rotterdam')
             page.locator('#new-search').click()
             expect(page.locator('#search-profile')).to_have_value(bea_id)
+            page.locator('#search-profile').select_option('default')
+            expect(page.locator('#search-recipient')).to_contain_text('alex@example.com')
+            expect(page.locator('#search-profile-preferences')).to_contain_text('1400')
+            page.locator('#search-profile').select_option(bea_id)
+            expect(page.locator('#search-recipient')).to_contain_text('bea@example.com')
             page.keyboard.press('Escape')
             expect(page.locator('#search-editor')).not_to_be_visible()
             expect(page.locator('#new-search')).to_be_focused()

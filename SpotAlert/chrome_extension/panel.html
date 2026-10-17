@@ -10,7 +10,7 @@
 <body>
   <header class="app-header">
     <a class="brand" href="#" aria-label="SpotAlert home"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#78e0ba"/><path d="M6 17h5l3-8 5 15 3-7h4" fill="none" stroke="#10271d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>SpotAlert</span></a>
-    <div class="header-actions"><button id="stop-all" class="danger-button" disabled>Stop all</button>
+    <div class="header-actions"><button id="reload-extension" class="secondary-button" type="button" aria-label="Reload extension" title="Reload SpotAlert, then reopen the dashboard">↻ Reload</button><button id="stop-all" class="danger-button" disabled>Stop all</button>
     <button id="expand" class="icon-button" title="Open full workspace" aria-label="Open full workspace"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M10 4H4v16h16v-6"/></svg></button>
     </div>
   </header>
@@ -38,17 +38,8 @@
       <div id="search-list" class="search-list"></div>
     </section>
     <div id="monitoring-view" role="tabpanel" aria-labelledby="monitoring-tab" hidden>
-    <header class="location-heading"><h2>General monitoring</h2><span>Availability by website</span></header>
-    <p class="helper scope-explainer">Checks website availability without an applicant’s criteria. Profile searches share these page checks and have their own Start/Pause controls in Searches.</p>
-    <details id="location-overview" class="location-overview"><summary>Overview &amp; display</summary>
-    <section class="metrics" aria-label="Monitoring totals">
-      <div><span class="metric-label">Watching</span><strong id="active-count">0</strong></div>
-      <div><span class="metric-label">Available websites</span><strong id="available-count">0</strong></div>
-      <div><span class="metric-label">Available apartments</span><strong id="apartment-count">0</strong><span id="apartment-count-note" class="metric-note" hidden>Minimum · unit counts unknown</span></div>
-      <div><span class="metric-label">Checks</span><strong id="check-count">0</strong></div>
-    </section>
-    <label class="compact-toggle checkbox-label"><input id="compact-view" type="checkbox"> Compact view</label>
-    </details>
+    <header class="location-heading"><h2>General monitoring</h2><div class="building-check-group"><span id="building-selection-count" class="building-selection-count"></span><div class="building-check-actions"><button id="monitor-selected-buildings" class="secondary-button" type="button">Start monitoring</button><button id="check-all-buildings" class="primary-button" type="button" title="Check every building once without starting recurring monitoring">Check now</button><button id="cancel-all-checks" class="text-button" type="button" hidden>Cancel checks</button></div><p id="building-check-progress" class="helper" role="status" hidden></p></div></header>
+    <details id="mobile-check-selection" class="mobile-check-selection"><summary id="mobile-check-selection-summary">Buildings to check</summary><div id="mobile-check-options"></div></details>
     <label class="mobile-location-picker">Location<select id="location-picker" aria-label="Choose location"></select></label>
     <div class="workspace">
       <aside class="watchlist">
@@ -59,6 +50,15 @@
         <div class="empty-state"><h2>Select a website</h2></div>
       </section>
     </div>
+    <details id="location-overview" class="location-overview"><summary>Display &amp; totals</summary>
+    <section class="metrics" aria-label="Monitoring totals">
+      <div><span class="metric-label">Watching</span><strong id="active-count">0</strong></div>
+      <div><span class="metric-label">Available websites</span><strong id="available-count">0</strong></div>
+      <div><span class="metric-label">Available apartments</span><strong id="apartment-count">0</strong><span id="apartment-count-note" class="metric-note" hidden>Minimum · unit counts unknown</span></div>
+      <div><span class="metric-label">Checks</span><strong id="check-count">0</strong></div>
+    </section>
+    <label class="compact-toggle checkbox-label"><input id="compact-view" type="checkbox"> Compact view</label>
+    </details>
     </div>
     <section id="settings-view" role="tabpanel" aria-labelledby="settings-tab" hidden>
       <div class="settings-heading"><h2>Settings</h2></div>

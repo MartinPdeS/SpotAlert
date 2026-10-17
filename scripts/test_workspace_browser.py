@@ -20,6 +20,7 @@ def main():
             ignore_default_args=['--disable-extensions'])
         try:
             worker = context.service_workers[0] if context.service_workers else context.wait_for_event('serviceworker')
+            worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
             worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Disabled in isolated UI tests');};}")
             context.route('https://**/*', lambda route: route.fulfill(content_type='text/html', body='<h1>Synthetic apartment</h1>'))
             page = context.new_page()
@@ -86,7 +87,7 @@ def main():
               const library=(await chrome.storage.local.get('spotalert.application-profiles.v1'))['spotalert.application-profiles.v1'];
               const location=state.monitors[0];
               const listing={id:'studio',name:'Studio with balcony',matched:true,index:1,rent:'€1,250',size:'32 m²',apartmentType:'studio',pageUrl:location.url};
-              location.samples=[listing]; location.available=true;
+              location.samples=[listing]; location.available=true; location.lastCheckedAt=Date.now(); location.checks=1;
               state.monitors[1].error='Complete verification in the website tab.'; state.monitors[1].errorKind='verification';
               state.searches=[{id:'test-search',name:'Test apartments',profileId:library.profiles.find(profile=>profile.testProfile).id,enabled:false,locationIds:[location.id],actions:{email:true,autoApply:false},results:{[location.id]:{at:Date.now(),matches:[listing]}},activity:[{id:'failed-email',monitorId:location.id,listingId:'studio',listingName:'Studio with balcony',channel:'email',status:'failed',at:Date.now(),message:'Sender needs configuration.'}]},
               {id:'real-search',name:'Actual applicant',profileId:'default',enabled:true,locationIds:[location.id],actions:{autoApply:true,email:false},results:{},activity:[]}];
@@ -124,6 +125,18 @@ def main():
                 for tab in ['Searches', 'Locations', 'Profiles', 'Settings', 'Clients']:
                     page.get_by_role('tab', name=tab, exact=True).click()
                     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), (width, tab, page.evaluate("[...document.querySelectorAll('body *')].filter(e=>e.getBoundingClientRect().right>innerWidth+1 && e.getBoundingClientRect().width>0).slice(0,12).map(e=>[e.tagName,e.className,e.getBoundingClientRect().right])"))
+                    if tab == 'Locations':
+                        group = page.locator('.building-check-actions')
+                        monitoring = group.locator('#monitor-selected-buildings').bounding_box()
+                        check = group.locator('#check-all-buildings').bounding_box()
+                        assert abs(monitoring['y'] - check['y']) < 2, (width, monitoring, check)
+                        assert 0 < check['x'] - monitoring['x'] - monitoring['width'] < 12, (width, monitoring, check)
+                        expect(page.locator('.building-control-panel')).not_to_contain_text('profile search')
+                        expect(page.locator('.building-control-panel h3')).to_have_count(1)
+                        status = page.locator('.building-control-panel .result-status').bounding_box()
+                        checked = page.locator('.building-control-panel .freshness').bounding_box()
+                        assert abs(status['y'] - checked['y']) < 1, (width, status, checked)
+                        assert abs(status['height'] - checked['height']) < 1, (width, status, checked)
                     page.evaluate("()=>{window.scrollTo(0,0);document.querySelector('#toast').hidden=true;}")
                     page.screenshot(path=str(ARTIFACTS / f'workspace-{tab.lower()}-{width}.png'), full_page=True)
                 page.get_by_role('tab', name='Locations', exact=True).click()
@@ -131,7 +144,7 @@ def main():
                     expect(page.locator('#location-picker')).to_be_visible()
                     expect(page.locator('.watchlist')).not_to_be_visible()
                     page.locator('#location-picker').select_option(index=2)
-                    expect(page.locator('.detail-title')).to_contain_text('Canvas')
+                    expect(page.locator('.building-control-heading')).to_contain_text('Canvas')
                     page.locator('#location-picker').select_option(index=0)
                 expect(page.locator('.sample .listing-rent')).to_contain_text('€1,250')
                 expect(page.locator('.sample').get_by_role('link', name='View apartment ↗')).to_be_visible()
@@ -148,6 +161,8 @@ def main():
             page.screenshot(path=str(ARTIFACTS / 'clean-profiles-desktop.png'))
             page.get_by_role('tab', name='Searches', exact=True).click()
             page.screenshot(path=str(ARTIFACTS / 'clean-searches-desktop.png'))
+            page.get_by_role('tab', name='Locations', exact=True).click()
+            page.screenshot(path=str(ARTIFACTS / 'clean-locations-desktop.png'))
             page.set_viewport_size({'width': 320, 'height': 900})
             page.get_by_role('tab', name='Profiles', exact=True).click()
             page.screenshot(path=str(ARTIFACTS / 'clean-profiles-mobile.png'))
@@ -160,17 +175,20 @@ def main():
               await chrome.storage.local.set({[key]:state});
             }""")
             page.locator('#location-picker').select_option(index=0)
-            expect(page.locator('#detail')).to_contain_text('General monitoring · Off')
-            expect(page.get_by_role('button', name='Cancel check', exact=True)).to_be_visible()
-            expect(page.get_by_role('button', name='Checking…', exact=True)).to_be_disabled()
-            page.get_by_role('button', name='Start general monitoring', exact=True).click()
-            expect(page.get_by_role('button', name='Stop general monitoring', exact=True)).to_be_visible()
-            page.get_by_role('button', name='Stop general monitoring', exact=True).click()
-            expect(page.locator('#detail')).to_contain_text('General monitoring · Off')
-            expect(page.locator('#detail')).to_contain_text('active profile search')
-            page.get_by_role('button', name='Cancel check', exact=True).click()
-            expect(page.get_by_role('button', name='↻ Check now', exact=True)).to_be_enabled()
-            page.locator('#location-picker').select_option(index=1)
+            expect(page.get_by_role('button', name='Start monitoring', exact=True)).to_be_visible()
+            page.set_viewport_size({'width': 1280, 'height': 900})
+            page.locator('#monitors input').nth(1).uncheck()
+            page.locator('#monitors input').nth(2).uncheck()
+            expect(page.locator('#detail').get_by_role('button', name='Check now', exact=True)).to_have_count(0)
+            page.get_by_role('button', name='Start monitoring', exact=True).click()
+            expect(page.get_by_role('button', name='Stop monitoring', exact=True)).to_be_visible()
+            page.get_by_role('button', name='Stop monitoring', exact=True).click()
+            expect(page.get_by_role('button', name='Start monitoring', exact=True)).to_be_visible()
+            expect(page.locator('.building-control-panel')).not_to_contain_text('profile search')
+            assert page.evaluate("async()=> (await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].searches.some(search=>search.enabled)")
+            page.evaluate("()=>chrome.runtime.sendMessage({type:'cancel-check',id:'ourdomain-amsterdam-diemen'})")
+            expect(page.get_by_role('button', name='Check now', exact=True)).to_be_enabled()
+            page.locator('.monitor-card').nth(1).click()
             expect(page.get_by_role('button', name='Retry check', exact=True)).to_be_visible()
             expect(page.locator('#detail')).to_contain_text('Availability could not be confirmed')
             expect(page.locator('#detail')).to_contain_text('complete verification')
@@ -189,6 +207,11 @@ def main():
             assert any(error['operation'] == 'dashboard-script' for error in report['recentErrors'])
             assert 'private-token' not in json.dumps(report)
             assert 'user@example.com' not in json.dumps(report)
+            page.evaluate("()=>{chrome.runtime.reload=()=>{globalThis.extensionReloadRequested=true;};}")
+            expect(page.locator('#reload-extension')).to_be_visible()
+            page.locator('#reload-extension').click()
+            assert page.evaluate('globalThis.extensionReloadRequested')
+            expect(page.locator('#reload-extension')).to_be_disabled()
             assert not errors, errors
             print('Workspace UI passed: navigation, compact cards, recovery actions, missing-field focus, conditional fields, test badges, sticky save, and 320/360/1280px layouts.')
         finally:
