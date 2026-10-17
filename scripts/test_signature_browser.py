@@ -33,7 +33,7 @@ def main():
             site.goto(URL)
             panel = context.new_page()
             panel.goto(worker.url.replace('background.js', 'panel.html'))
-            panel.get_by_role('tab', name='Personal information', exact=True).click()
+            panel.get_by_role('tab', name='Profiles', exact=True).click()
             expect(panel.locator('#fill-application')).to_have_count(0)
             def prepare():
                 return panel.evaluate("()=>chrome.runtime.sendMessage({type:'prepare-application',canvasSignature:true})")
@@ -87,7 +87,7 @@ def main():
             result = panel.evaluate("()=>chrome.runtime.sendMessage({type:'save-profile',profile:{firstName:'Alex',lastName:'Example'}})")
             assert result['ok'] is True
             panel.reload()
-            panel.get_by_role('tab', name='Personal information', exact=True).click()
+            panel.get_by_role('tab', name='Profiles', exact=True).click()
             result = prepare()
             assert result['ok'] is True and 'Signature Type 1 selected' in result['result']['message']
             expect(site.locator('#chkAgreement')).to_be_checked()
@@ -103,7 +103,7 @@ def main():
                 monitor.samples=[{id:'signature-test',matched:true,name:'Test apartment'}];
                 await chrome.storage.local.set({[key]:value});
             }""", URL)
-            panel.get_by_role('tab', name='Monitoring', exact=True).click()
+            panel.get_by_role('tab', name='Locations', exact=True).click()
             panel.locator('.monitor-card').filter(has_text='Canvas').click()
             panel.locator('.sample').get_by_role('button', name='Apply').click()
             panel.locator('#apply-profile').select_option('default')

@@ -1040,7 +1040,9 @@ test('search start and pause share scheduling and Stop all disables every search
   assert.equal(api.reloads.length, before);
   await engine.dispatch({type: 'set-search-enabled', id: a.id, enabled: false});
   assert.equal((await engine.state()).monitors[0].enabled, true);
-  await assert.rejects(engine.dispatch({type: 'pause', id}), /Pause the searches/);
+  await engine.dispatch({type: 'pause', id});
+  assert.equal((await engine.state()).monitors[0].enabled, true, 'profile checks continue after stopping general monitoring');
+  assert.equal((await engine.state()).monitors[0].searchManaged, true);
   await engine.dispatch({type: 'set-search-enabled', id: b.id, enabled: false});
   assert.equal((await engine.state()).monitors[0].enabled, false);
   await engine.dispatch({type: 'set-search-enabled', id: a.id, enabled: true});
@@ -1452,4 +1454,260 @@ test('Settings test email requires a selected profile and never falls back to th
     assert.deepEqual(bodies[0].to,['alex@example.com']);
     assert.equal(bodies[0].from,'sender@example.com');
   } finally {globalThis.fetch=original;}
+});
+
+test('password generation leaves identity data separate from fictional test applicants', async () => {
+  const {generateRegistrationPassword, validateProfile, profileCompleteness} = await import('../SpotAlert/chrome_extension/profile.js');
+  const {createTestProfile} = await import('../SpotAlert/chrome_extension/test-profiles.js');
+  const password = generateRegistrationPassword();
+  assert.equal(typeof password, 'string');
+  assert.match(password, /^Aa7!.{24}$/);
+  const first = createTestProfile(1), second = createTestProfile(2);
+  assert.notEqual(first.id, second.id);
+  for (const entry of [first, second]) {
+    assert.equal(entry.testProfile, true);
+    assert.match(entry.name, /^Test profile [12] · /);
+    assert.match(entry.details.email, /@example\.com$/);
+    assert.deepEqual(validateProfile(entry.details), entry.details);
+    assert.equal(profileCompleteness(entry.details).ready, true);
+    assert.equal(entry.details.socialSecurityNumber, '');
+    assert.equal(entry.details.iban, '');
+  }
+  assert.notEqual(first.details.registrationPassword, second.details.registrationPassword);
+});
+
+test('creating two test profiles preserves real applicants and edits across repeated requests and restarts', async () => {
+  const [, {createEngine}] = await modules;
+  const api = fakeChrome();
+  const engine = createEngine(api);
+  await engine.initialize();
+  await engine.dispatch({type: 'save-profile', name: 'Real applicant', profile: {firstName: 'Actual', dateOfBirth: '1995-03-04'}});
+  const original = (await engine.dispatch({type: 'profiles'})).profiles[0];
+  let library = await engine.dispatch({type: 'create-test-profiles'});
+  assert.equal(library.profiles.length, 3);
+  assert.deepEqual(library.profiles[0], original);
+  assert.equal(library.profiles.filter(entry => entry.testProfile).length, 2);
+  await engine.dispatch({type: 'save-profile', name: 'Test profile 1 edited', profile: {...library.profiles[1].details, firstName: 'Edited'}});
+  library = await engine.dispatch({type: 'create-test-profiles'});
+  assert.equal(library.profiles.length, 3);
+  assert.equal(library.profiles[1].details.firstName, 'Edited');
+  const restarted = createEngine(api);
+  await restarted.initialize();
+  assert.deepEqual(await restarted.dispatch({type: 'profiles'}), library);
+  await restarted.dispatch({type: 'select-profile', id: 'spotalert-test-profile-2'});
+  await restarted.dispatch({type: 'clear-profile'});
+  library = await restarted.dispatch({type: 'create-test-profiles'});
+  assert.equal(library.profiles.length, 3);
+  assert.equal(library.profiles[1].details.firstName, 'Edited');
+  assert.deepEqual(library.profiles[0], original);
+});
+
+test('profile readiness provides field targets and leaves optional fields out of required navigation', async () => {
+  const {profileCompleteness, requiredProfileFields} = await import('../SpotAlert/chrome_extension/profile.js');
+  const result = profileCompleteness({firstName: 'Alex', noMiddleName: 'Yes'});
+  assert.ok(result.missingFields.some(field => field.key === 'nationality' && field.label === 'Nationality'));
+  assert.ok(!result.missingFields.some(field => ['firstName', 'middleName', 'iban', 'registrationPassword'].includes(field.key)));
+  assert.ok(requiredProfileFields({noMiddleName: 'No'}).includes('middleName'));
+});
+
+test('attention tasks point to recoverable actions and retire superseded failures', async () => {
+  const {attentionItems} = await import('../SpotAlert/chrome_extension/ui.js');
+  const {searchClaimKey} = await import('../SpotAlert/chrome_extension/searches.js');
+  const profile = {id: 'alex', name: 'Alex', details: {firstName: 'Alex'}};
+  const failed = {id: 'failed', at: 1, listingId: 'studio', monitorId: 'diemen', channel: 'email', status: 'failed', message: 'Sender rejected'};
+  const search = {id: 'search', name: 'Amsterdam', profileId: profile.id, enabled: true, actions: {autoApply: true, email: true}, activity: [failed]};
+  const state = {monitors: [{id: 'diemen', name: 'Diemen', error: 'Verification required'}], searches: [search, {...search, id: 'overlap', activity: []}], searchClaims: {}};
+  let items = attentionItems(state, {profiles: [profile]});
+  assert.equal(items.filter(item => item.action === 'profile').length, 1, 'Overlapping searches share one missing-profile task');
+  assert.ok(items.some(item => item.action === 'location' && item.monitorId === 'diemen'));
+  assert.ok(items.some(item => item.label === 'Review email failure' && item.section === 'search-activity'));
+  const sent = {...failed, id: 'sent', at: 2, status: 'sent'};
+  search.activity.unshift(sent);
+  state.searchClaims[searchClaimKey(profile.id, 'diemen', 'studio', 'email')] = sent;
+  items = attentionItems(state, {profiles: [profile]});
+  assert.ok(!items.some(item => item.channel === 'email'), 'A successful repeat resolves the older email failure');
+  search.activity.unshift({...failed, id: 'application', at: 3, channel: 'autoApply', status: 'review', tabId: 8});
+  items = attentionItems(state, {profiles: [profile]});
+  assert.ok(items.some(item => item.action === 'application' && item.tabId === 8));
+});
+
+test('regenerating realistic fixtures preserves actual applicant details', async () => {
+  const [, {createEngine}] = await modules;
+  const engine = createEngine(fakeChrome());
+  await engine.initialize();
+  await engine.dispatch({type:'save-profile', name:'Actual applicant', profile:{firstName:'Actual'}});
+  const original = (await engine.dispatch({type:'profiles'})).profiles[0];
+  const before = await engine.dispatch({type:'create-test-profiles'});
+  const after = await engine.dispatch({type:'create-test-profiles',regenerate:true});
+  assert.equal(after.profiles.length,3);
+  assert.deepEqual(after.profiles[0],original);
+  for (let index=1;index<=2;index++) {
+    const details=after.profiles[index].details;
+    assert.notEqual(details.registrationPassword,before.profiles[index].details.registrationPassword);
+    assert.ok(!details.lastName.includes('Example'));
+    assert.equal(details.employerCity,details.city);
+    assert.ok(Number(details.monthlyIncome)>Number(details.maxRent)*2);
+    assert.match(details.phone,/^\+316\d{8}$/);
+    assert.match(details.postalCode,/^\d{4} [A-Z]{2}$/);
+  }
+});
+
+test('Canvas retries an empty injection result without treating it as missing site access', async () => {
+  const {api,engine}=await setup();
+  const canvas=(await engine.state()).monitors.find(item=>item.id==='canvas-rotterdam-blaak');
+  api.url=canvas.url; api.pageSamples=[{index:1,text:'Check availability',name:'Studio'}];
+  const original=api.scripting.executeScript;
+  let reads=0;
+  api.scripting.executeScript=async options=>{
+    if(options.func.name==='readPage' && ++reads===1) return [{frameId:0}];
+    if(options.func.name==='inspectReadState') return [{frameId:0,result:{verification:false,login:false}}];
+    return original(options);
+  };
+  await engine.check(canvas.id);
+  const result=(await engine.state()).monitors.find(item=>item.id===canvas.id);
+  assert.equal(reads,2); assert.equal(result.error,null); assert.equal(result.available,true);
+});
+
+test('persistent empty page reads preserve results and report loading rather than permissions', async () => {
+  const {api,engine,id}=await setup();
+  api.pageSamples=[{index:1,text:'Apply Now',name:'Studio'}];
+  await engine.check(id);
+  api.scripting.executeScript=async options=>options.func.name==='inspectReadState' ? [{result:{verification:false,login:false}}] : [];
+  await engine.check(id);
+  const result=(await engine.state()).monitors.find(item=>item.id===id);
+  assert.equal(result.errorKind,'loading');
+  assert.match(result.error,/no page data after retrying/);
+  assert.equal(result.available,true);
+  assert.ok(!result.error.includes('permissions'));
+});
+
+test('an empty result on a verification screen identifies the actual website prompt', async () => {
+  const {api,engine,id}=await setup();
+  api.scripting.executeScript=async options=>options.func.name==='inspectReadState' ? [{result:{verification:true,login:false}}] : [];
+  await engine.check(id);
+  assert.equal((await engine.state()).monitors.find(item=>item.id===id).errorKind,'verification');
+});
+
+test('actual Chrome scripting permission errors remain permission errors', async () => {
+  const {api,engine,id}=await setup();
+  api.scripting.executeScript=async ()=>{throw new Error('Cannot access contents of url. Extension manifest must request permission.');};
+  await engine.check(id);
+  const result=(await engine.state()).monitors.find(item=>item.id===id);
+  assert.equal(result.errorKind,'permission');
+  assert.match(result.error,/Site access/);
+});
+
+test('a loaded page snapshot returns its data synchronously without an injected Promise', async () => {
+  const [, , {readPage}] = await modules;
+  const context=vm.createContext({document:{querySelectorAll:()=>{throw new Error('Invalid selector');}}, location:{href:'https://example.com'}});
+  const result=vm.runInContext('('+readPage.toString()+')({type:"css",selector:"["},0)',context);
+  assert.equal(result.errorKind,'selector');
+  assert.equal(typeof result.then,'undefined');
+});
+
+test('late listing snapshots wait in the worker and cancellation stops further injections', async () => {
+  const {api,engine,id}=await setup();
+  const original=api.scripting.executeScript;
+  let reads=0;
+  api.scripting.executeScript=async options=>{
+    if(options.func.name==='readPage') {
+      reads++;
+      assert.equal(options.args[1],0);
+      if(reads===1) return [{result:{pending:true,error:'Still loading',errorKind:'loading'}}];
+    }
+    return original(options);
+  };
+  await engine.check(id);
+  assert.equal(reads,2);
+  assert.equal((await engine.state()).monitors.find(item=>item.id===id).error,null);
+  reads=0;
+  api.scripting.executeScript=async ()=>{reads++;return [{result:{pending:true,error:'Still loading',errorKind:'loading'}}];};
+  const pending=engine.check(id);
+  while(reads<1) await new Promise(resolve=>setTimeout(resolve,1));
+  await engine.dispatch({type:'stop-all'});
+  await pending;
+  assert.equal(reads,1);
+});
+
+
+test('one activity timeline deduplicates current records and retains previous attempts once', async () => {
+  const {mergeActionHistory, cleanError}=await import('../SpotAlert/chrome_extension/ui.js');
+  const previous={id:'first',at:1,status:'failed'};
+  const current={id:'second',at:2,status:'sent',previousAttempts:[previous]};
+  const unclaimed={id:'cancelled',at:3,status:'cancelled'};
+  const timeline=mergeActionHistory([current],[previous,current,unclaimed,unclaimed]);
+  assert.deepEqual(timeline,[unclaimed,current]);
+  assert.deepEqual(timeline[1].previousAttempts,[previous]);
+  assert.equal(cleanError('Canvas','https://example.com','Canvas (example.com): No page data.'),'No page data.');
+  assert.equal(cleanError('Canvas','https://example.com','Provider error: detail'),'Provider error: detail');
+});
+
+test('diagnostics allowlists metadata and masks credentials, URLs and email addresses', async () => {
+  const {diagnosticReport, diagnosticText} = await import('../SpotAlert/chrome_extension/diagnostics.js');
+  const report = diagnosticReport({profiles: [{password: 'private-profile'}], apiKey: 'private-setting', monitors: [{id: 'canvas', url: 'https://canvas.example/private?token=secret', error: 'Failed https://canvas.example/private?token=secret contact alex@example.com Bearer private-auth apiKey=private-key', history: Array.from({length: 15}, (_, at) => ({at, kind: 'error', message: 'private-history'})), samples: ['private-page']}], searches: [{id: 'search', activity: [{status: 'failed', message: 'private-delivery', email: 'private-recipient'}]}]}, [{at: 1, operation: 'check', message: 'password=private-password'}], {version: '1'});
+  const text = JSON.stringify(report);
+  for (const secret of ['private-profile', 'private-setting', 'private-auth', 'private-key', 'private-password', 'private-page', 'private-history', 'private-delivery', 'private-recipient', 'alex@example.com', '?token=secret', '/private']) assert.ok(!text.includes(secret), secret);
+  assert.equal(report.locations[0].site, 'canvas.example');
+  assert.equal(report.locations[0].recentEvents.length, 10);
+  assert.equal(report.locations[0].recentEvents[0].at, 0);
+  assert.equal(diagnosticText('re_supersecret'), '[credential omitted]');
+  assert.equal(diagnosticReport({}, Array.from({length: 25}, (_, at) => ({at}))).recentErrors.length, 20);
+});
+
+
+test('result status distinguishes pending, failed, outdated and genuine empty results', async () => {
+  const {resultStatus, monitoringScope, errorRecovery} = await import('../SpotAlert/chrome_extension/ui.js');
+  const monitor = {id: 'location', enabled: true, searchManaged: true, lastCheckedAt: 100000, intervalSeconds: 30, samples: []};
+  assert.equal(resultStatus(monitor, undefined, 100001).label, 'No availability');
+  assert.equal(resultStatus(monitor, {at: 100000, matches: []}, 100001).label, 'No matches');
+  assert.equal(resultStatus(monitor, null, 100001).kind, 'unchecked');
+  assert.equal(resultStatus(monitor, undefined, 200001).kind, 'outdated');
+  assert.equal(resultStatus({...monitor, error: 'failed'}, undefined, 100001).kind, 'failed');
+  assert.equal(resultStatus({...monitor, phase: 'reading', error: 'old failure'}).kind, 'checking');
+  const scope = monitoringScope(monitor, [{enabled: true, locationIds: ['location']}]);
+  assert.equal(scope.general, false); assert.equal(scope.searches.length, 1);
+  assert.match(errorRecovery('verification'), /complete verification/);
+});
+
+test('general monitoring and profile searches can be stopped independently', async () => {
+  const {api, engine, id} = await setup();
+  const {EMAIL_KEY} = await import('../SpotAlert/chrome_extension/email.js');
+  api.data[EMAIL_KEY] = {apiKey: 'test'};
+  await engine.dispatch({type: 'save-profile', profile: {email: 'a@example.com'}});
+  const search = await saveSearch(engine, 'default', id);
+  await engine.dispatch({type: 'start', id});
+  await engine.dispatch({type: 'set-search-enabled', id: search.id, enabled: true});
+  await engine.dispatch({type: 'set-search-enabled', id: search.id, enabled: false});
+  assert.equal((await engine.state()).monitors[0].enabled, true, 'general monitoring continues');
+  await engine.dispatch({type: 'set-search-enabled', id: search.id, enabled: true});
+  await engine.dispatch({type: 'pause', id});
+  let value = await engine.state();
+  assert.equal(value.searches[0].enabled, true);
+  assert.equal(value.monitors[0].searchManaged, true);
+  await engine.dispatch({type: 'cancel-check', id});
+  value = await engine.state();
+  assert.equal(value.monitors[0].enabled, true);
+  assert.ok(value.monitors[0].nextCheckAt, 'cancellation preserves the next scheduled check');
+  await engine.dispatch({type: 'set-search-enabled', id: search.id, enabled: false});
+  assert.equal((await engine.state()).monitors[0].enabled, false);
+});
+
+test('Cancel check aborts a reload, retains successful results and keeps general monitoring scheduled', async () => {
+  const {engine, api, id} = await setup();
+  await engine.setEnabled(id, true);
+  const before = (await engine.state()).monitors[0];
+  api.completeReload = false;
+  const count = api.reloads.length;
+  const pending = engine.check(id);
+  while (api.reloads.length === count) await new Promise(resolve => setTimeout(resolve, 1));
+  await engine.dispatch({type: 'cancel-check', id});
+  await pending;
+  const after = (await engine.state()).monitors[0];
+  assert.equal(after.enabled, true);
+  assert.equal(after.phase, 'waiting');
+  assert.equal(after.checks, before.checks);
+  assert.deepEqual(after.samples, before.samples);
+  assert.ok(after.nextCheckAt);
+  assert.equal(api.tabs.onUpdated.listeners.size, 0);
+  await engine.dispatch({type: 'pause', id});
 });

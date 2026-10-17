@@ -41,7 +41,7 @@ def main():
               await send({type:'save-profile',name:'Alex',profile:{firstName:'Alex',lastName:'Example',email:'alex@example.com',phone:'+31612345678',maxRent:'1400',minSize:'30',preferredApartmentType:'studio',moveInFrom:'2026-11-02'}});
               await chrome.storage.local.set({'spotalert.resend.v1':{apiKey:'test-only',enabled:false}});
             }''')
-            page.get_by_role('tab', name='Profile searches', exact=True).click()
+            page.get_by_role('tab', name='Searches', exact=True).click()
             page.locator('#new-search').click()
             expect(page.locator('#search-profile-preferences')).to_contain_text('1400')
             expect(page.locator('#search-profile-preferences')).to_contain_text('30 m²')
@@ -68,24 +68,27 @@ def main():
             card = page.locator('.search-card')
             expect(card).to_contain_text('Alex Amsterdam')
             expect(card).to_contain_text('Auto-apply')
-            expect(card).to_contain_text('Email: alex@example.com')
+            expect(card).to_contain_text('Email')
+            expect(card).not_to_contain_text('alex@example.com')
             expect(card).to_contain_text('Paused')
             expect(card).to_contain_text('30 m²')
+            if not card.locator(".search-more").evaluate("node=>node.open"):
+                card.locator(".search-more > summary").click()
             card.get_by_role('button', name='Edit search', exact=True).click()
             expect(page.locator('#search-profile-preferences')).to_contain_text('30 m²')
             page.locator('#search-email').uncheck()
             page.locator('#search-form').get_by_role('button', name='Save search', exact=True).click()
             expect(card).to_contain_text('Auto-apply')
             expect(card).not_to_contain_text('Email:')
-            page.get_by_role('tab', name='Personal information', exact=True).click()
+            page.get_by_role('tab', name='Profiles', exact=True).click()
             page.locator('.profile-group').filter(has=page.locator('#personal-minSize')).locator('summary').click()
             page.locator('#personal-minSize').fill('32')
-            page.locator('#personal-form').get_by_role('button', name='Save personal information', exact=True).click()
-            page.get_by_role('tab', name='Profile searches', exact=True).click()
+            page.locator('#personal-form').get_by_role('button', name='Save profile', exact=True).click()
+            page.get_by_role('tab', name='Searches', exact=True).click()
             expect(card).to_contain_text('32 m²')
             # Inspect persistence across a dashboard reload.
             page.reload()
-            page.get_by_role('tab', name='Profile searches', exact=True).click()
+            page.get_by_role('tab', name='Searches', exact=True).click()
             expect(card).to_contain_text('Alex Amsterdam')
             card.get_by_role('button', name='Start search', exact=True).click()
             expect(page.locator('#start-search-dialog')).to_be_visible()
@@ -105,7 +108,7 @@ def main():
             page.screenshot(path=str(ROOT / 'artifacts/extension/start-search-toggles.png'), full_page=True)
             page.locator('#confirm-start-search').click()
             expect(page.locator('#start-search-dialog')).not_to_be_visible()
-            expect(card).to_contain_text('Searching')
+            expect(card).to_contain_text('Active')
             page.wait_for_function("""async () => {
               const state=(await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'];
               return state.monitors[0].checks > 0 && !state.monitors[0].error;
@@ -131,26 +134,26 @@ def main():
               const location=state.monitors[0].id;
               await send({type:'save-search',search:{name:'Bea Rotterdam',profileId:library.activeId,locationIds:[location],actions:{email:true}}});
               await send({type:'set-search-enabled',id:state.searches[0].id,enabled:true});
-              for(let i=0;i<200;i++) {
-                state=(await chrome.storage.local.get(key))[key];
-                if(state.monitors[0].checks>=2) break;
-                await new Promise(resolve=>setTimeout(resolve,20));
-              }
+              // Isolate seeded match results from the real background page reader.
+              await send({type:'cancel-check',id:location});
               state=(await chrome.storage.local.get(key))[key];
+              state.monitors[0].error=null; state.monitors[0].errorKind=null; state.monitors[0].lastCheckedAt=Date.now();
               const claimKey=JSON.stringify([state.searches[0].profileId,location,'studio','email']);
               state.searchClaims[claimKey]={id:'prior-email',searchId:'deleted-search',status:'sent',at:Date.now()-3600000,listingName:'Studio with balcony',message:'Accepted by provider for alex@example.com.'};
               state.searches[0].results[location]={at:Date.now(),matches:[{id:'studio',name:'Studio with balcony',text:'Apply Now',beds:'Studio',matched:true,rent:'€1,250',size:'32 m²',pageUrl:state.monitors[0].url},{id:'expensive',name:'Large expensive apartment',text:'Apply Now',rent:'1550',size:'23 m²',beds:'Studio',matched:false,ruleMatched:true,included:false,preferenceReasons:['€150 over budget (€1,400 maximum)','7 m² below minimum (30 m² required)']},{id:'unavailable',name:'Unavailable studio',text:'Get Notified',matched:false,ruleMatched:false}]};
               await chrome.storage.local.set({[key]:state});
             }""")
             expect(page.locator('.search-card')).to_have_count(2)
-            expect(page.locator('.search-match-previews')).to_contain_text('Studio with balcony')
             alex = page.locator('.search-card').filter(has_text='Alex Amsterdam')
-            alex.locator('.search-exclusions summary').click()
-            expect(alex.locator('.search-exclusions')).to_contain_text('€150 over budget')
-            expect(alex.locator('.search-exclusions')).to_contain_text('Not currently available')
-            alex.locator('.search-duplicates summary').click()
-            expect(alex.locator('.search-duplicates')).to_contain_text('Accepted by email provider')
-            alex.get_by_role('button', name='Authorize another email', exact=True).click()
+            alex.locator('.view-search-results').click()
+            detail = page.locator('#search-detail-body')
+            expect(detail).to_contain_text('Studio with balcony')
+            detail.locator('.search-exclusions summary').click()
+            expect(detail.locator('.search-exclusions')).to_contain_text('€150 over budget')
+            expect(detail.locator('.search-exclusions')).to_contain_text('Not currently available')
+            detail.locator('.search-duplicates summary').click()
+            expect(detail.locator('.search-duplicates')).to_contain_text('Accepted by email provider')
+            detail.get_by_role('button', name='Authorize another email', exact=True).click()
             expect(page.locator('#repeat-search-dialog')).to_be_visible()
             expect(page.locator('#repeat-search-details')).to_contain_text('Studio with balcony')
             expect(page.locator('#repeat-search-consent')).not_to_be_checked()
@@ -164,18 +167,19 @@ def main():
                 return new Response(JSON.stringify({id:'isolated-test-email'}),{status:200,headers:{'Content-Type':'application/json'}});
               };
             }""")
-            alex.get_by_role('button', name='Authorize another email', exact=True).click()
+            detail.get_by_role('button', name='Authorize another email', exact=True).click()
             page.locator('#confirm-repeat-search').click()
             expect(page.locator('#repeat-search-dialog')).to_be_visible()
             assert worker.evaluate('globalThis.testSentEmails.length') == 0
             page.locator('#repeat-search-consent').check()
             page.locator('#confirm-repeat-search').click()
             expect(page.locator('#repeat-search-dialog')).not_to_be_visible()
-            expect(alex.locator('.search-duplicates')).to_contain_text('Email accepted by provider')
-            expect(alex.locator('.search-duplicates')).to_contain_text('Earlier attempts (1)')
+            expect(detail.locator('.search-duplicates')).to_contain_text('Accepted by email provider')
+            expect(detail.locator('.search-duplicates')).to_contain_text('Earlier attempts (1)')
             assert worker.evaluate('globalThis.testSentEmails.length') == 1
             assert worker.evaluate('globalThis.testSentEmails[0].to[0]') == 'alex@example.com'
 
+            page.locator('#close-search-detail').click()
             page.set_viewport_size({'width': 1280, 'height': 1000})
             page.screenshot(path=str(ROOT / 'artifacts/extension/profile-searches-desktop.png'), full_page=True)
             bea_id = page.locator('#search-profile-filter option', has_text='Bea').get_attribute('value')

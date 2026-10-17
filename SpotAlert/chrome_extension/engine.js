@@ -1,24 +1,26 @@
-import {validateSearch, searchReadiness, searchClaimKey, claimActionId} from "./searches.js";
-import {applicationStage} from './application-state.js';
+import {createTestProfile} from "./test-profiles.js";
+import {createProfileStore} from "./profile-store.js";
+import {createScheduler} from "./scheduler.js";
+import {createApplicationRunner} from "./application-runner.js";
+import {createSearchActions} from "./search-actions.js";
+import {validateSearch} from "./searches.js";
 import {siteForUrl, readerForRule, pageConfig} from './sites/index.js';
 import {clientQuestionnaire, parseClientReply} from "./clients.js";
 import {ALARM_PREFIX, STORAGE_KEY, defaultMonitor, evaluateRule, sitePattern, siteError, errorKind, listingKey, safeListingUrl, samePage, inMonitoringHours, nextMonitoringTime, retrySeconds, SUPPORTED_SITES, validateSupportedMonitor, validateMonitor} from "./core.js";
-import {PROFILE_KEY, PROFILES_KEY, validateProfile, fillApplicationForm, selectMoveInDate, startCanvasApplication} from "./profile.js";
-import {applicationStep, captureApplicationStructure, prepareCanvasSignature} from "./application.js";
+import {PROFILE_KEY, PROFILES_KEY, validateProfile, fillApplicationForm, selectMoveInDate} from "./profile.js";
+import {prepareCanvasSignature} from "./application.js";
 import {APPLICATION_BUILD} from "./application-diagnostics.js";
 import {inspectApplicationPage} from "./debug.js";
 import {EMAIL_KEY, sendEmailAlert} from "./email.js";
-import {openApplication, readPage, canvasBookingLink} from "./page.js";
+import {readPage, inspectReadState} from "./page.js";
 
-/** Persisted scheduling and page checks. No native process or timer loop. */
+/** Coordinate persisted monitor state, browser reads, and optional profile storage. */
 export function createEngine(api, now = () => Date.now(), timers = globalThis) {
   let writes = Promise.resolve();
   let checks = Promise.resolve();
   const running = new Map();
-  const fastTimers = new Map();
   const debugRuns = new Map();
   const applications = new Map();
-  let searchActions = Promise.resolve();
   const applicationTabs = new Set();
   const preparationControllers = new Map();
   function claimApplicationTab(tabId) {
@@ -60,28 +62,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
   }
 
   const deliveryRetries = new Set();
-  function clearFastTimer(id) {
-    if (fastTimers.has(id)) timers.clearTimeout(fastTimers.get(id));
-    fastTimers.delete(id);
-  }
-  async function arm(monitor, when) {
-    clearFastTimer(monitor.id);
-    if (monitor.intervalSeconds < 30 && when - now() < 30000) {
-      const timer = timers.setTimeout(() => {
-        fastTimers.delete(monitor.id);
-        return state().then((value) => {
-          const current = value.monitors.find((item) => item.id === monitor.id);
-          if (current?.enabled && current.intervalSeconds < 30 && current.nextCheckAt === when) return check(current.id, true);
-        }).catch(console.error);
-      }, Math.max(0, when - now()));
-      timer?.unref?.();
-      fastTimers.set(monitor.id, timer);
-    }
-    // Alarms survive worker suspension, but Chrome enforces a 30-second minimum.
-    await api.alarms.create(alarmName(monitor.id), {when: Math.max(now() + 30000, when)});
-  }
   const cancel = (id) => { running.get(id)?.abort(); running.delete(id); };
-
   async function state() {
     await writes;
     return (await api.storage.local.get(STORAGE_KEY))[STORAGE_KEY] || {version: 2, monitors: []};
@@ -106,68 +87,21 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     if (!monitor) throw new Error("This monitor no longer exists.");
     return monitor;
   };
-  const alarmName = (id) => ALARM_PREFIX + id;
   function history(monitor, event) {
     monitor.history.unshift({id: crypto.randomUUID(), at: now(), ...event});
     monitor.history = monitor.history.slice(0, 80);
   }
-  const FOLDER_KEY = "spotalert.profile-folder.v1";
-  let profilesLoaded = false;
-  async function profileFolder(command, library) {
-    if (!api.runtime.sendNativeMessage) throw new Error("Install the local profile helper, then reload SpotAlert.");
-    let response;
-    try { response = await api.runtime.sendNativeMessage("com.spotalert.profiles", {command, ...(library ? {library} : {})}); }
-    catch { throw new Error("Local profile helper unavailable. Install it and reload SpotAlert; your Chrome copy is preserved."); }
-    if (!response?.ok) throw new Error(response?.error || "Could not access the local profile folder.");
-    return response;
-  }
-  function refreshSearchProfiles(value, library) {
-    for (const search of value.searches || []) {
-      const profile = library.profiles.find(item => item.id === search.profileId);
-      if (!profile) continue;
-      delete search.preferences;
-      for (const [id, result] of Object.entries(search.results || {})) {
-        const monitor = value.monitors.find(item => item.id === id);
-        if (!monitor || !result.matches?.length) continue;
-        try { result.matches = evaluateRule(result.matches, monitor.rule, {clientPreferences: profile.details}).matches; }
-        catch { result.matches = []; result.at = null; }
-      }
-    }
-  }
-  async function saveLibrary(library) {
-    if ((await api.storage.local.get(FOLDER_KEY))[FOLDER_KEY]?.enabled) await profileFolder("write", library);
-    await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: library.profiles.find(item => item.id === library.activeId).details});
-    await mutate(value => {
-      refreshSearchProfiles(value, library);
-    });
-  }
-  async function profileLibrary() {
-    const saved = await api.storage.local.get([PROFILES_KEY, PROFILE_KEY, FOLDER_KEY]);
-    if (!profilesLoaded) {
-      // Restore disk profiles after removal/reinstallation, even without a Chrome copy.
-      try {
-        const disk = await profileFolder("read");
-        if (disk.library) {
-          const library = disk.library;
-          for (const entry of library.profiles) entry.details = validateProfile(entry.details);
-          await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: library.profiles.find(item => item.id === library.activeId).details, [FOLDER_KEY]: {enabled: true, path: disk.folder}});
-          profilesLoaded = true;
-          await mutate(value => refreshSearchProfiles(value, library));
-          return library;
-        }
-        const library = saved[PROFILES_KEY] || {activeId: "default", profiles: [{id: "default", name: "My profile", details: validateProfile(saved[PROFILE_KEY])}]};
-        await profileFolder("write", library);
-        await api.storage.local.set({[PROFILES_KEY]: library, [PROFILE_KEY]: library.profiles.find(item => item.id === library.activeId).details, [FOLDER_KEY]: {enabled: true, path: disk.folder}});
-        profilesLoaded = true;
-        return library;
-      } catch { /* Keep the browser copy usable; folder writes still report errors. */ }
-      profilesLoaded = true;
-    }
-    if (saved[PROFILES_KEY]) return saved[PROFILES_KEY];
-    const library = {activeId: "default", profiles: [{id: "default", name: "My profile", details: validateProfile(saved[PROFILE_KEY])}]};
-    await api.storage.local.set({[PROFILES_KEY]: library});
-    return library;
-  }
+  const {FOLDER_KEY, profileFolder, refreshSearchProfiles, saveLibrary, profileLibrary} = createProfileStore(api, mutate);
+  const {clearFastTimer, arm, alarmName} = createScheduler(api, now, timers, state, check);
+  const {applicationStatus, stopApplication, runApplication, openListing} = createApplicationRunner({
+    api, now, state, mutate, find, applications, preparationControllers,
+    applicationTabs, claimApplicationTab, waitForPage, profileLibrary, assignedProfile,
+  });
+  const {reconcileSearchLocations, readinessFor, repeatSearchAction, matchSearches} = createSearchActions({
+    api, now, state, mutate, find, history, profileLibrary, check,
+    clearFastTimer, cancel, alarmName, applications, runApplication,
+  });
+
   async function assignedProfile(monitor) {
     const library = await profileLibrary();
     const id = library.activeId;
@@ -285,17 +219,33 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     });
   }
   async function setEnabled(id, enabled) {
-    if (!enabled) { clearFastTimer(id); cancel(id); await api.alarms.clear(alarmName(id)); }
-    await mutate((value) => {
+    const transition = await mutate(value => {
       const monitor = find(value, id);
-      monitor.enabled = Boolean(enabled);
-      monitor.searchManaged = false;
-      monitor.phase = enabled ? "waiting" : "paused";
-      monitor.nextCheckAt = null;
-      monitor.generation = crypto.randomUUID();
-      history(monitor, {kind: enabled ? "started" : "paused", message: enabled ? "Monitoring started." : "Monitoring paused. The browser tab stays open."});
+      const profileActive = value.searches?.some(search => search.enabled && search.locationIds.includes(id));
+      const wasEnabled = monitor.enabled;
+      monitor.enabled = Boolean(enabled || profileActive);
+      monitor.searchManaged = !enabled && !!profileActive;
+      if (!monitor.enabled) {
+        monitor.phase = 'paused'; monitor.nextCheckAt = null; monitor.generation = crypto.randomUUID();
+      }
+      history(monitor, {kind: enabled ? 'started' : 'paused', message: enabled ? 'General monitoring started.' : profileActive ? 'General monitoring stopped. Profile searches continue.' : 'General monitoring stopped. The browser tab stays open.'});
+      return {enabled: monitor.enabled, start: monitor.enabled && !wasEnabled};
     });
-    if (enabled) return check(id, true);
+    if (!transition.enabled) { clearFastTimer(id); cancel(id); await api.alarms.clear(alarmName(id)); }
+    if (transition.start) return check(id, true);
+  }
+  async function cancelCheck(id) {
+    clearFastTimer(id); cancel(id); await api.alarms.clear(alarmName(id));
+    const active = await mutate(value => {
+      const monitor = find(value, id);
+      monitor.generation = crypto.randomUUID();
+      monitor.phase = monitor.enabled ? 'waiting' : 'paused';
+      monitor.nextCheckAt = null;
+      history(monitor, {kind: 'cancelled', message: 'Current check cancelled. Previous results retained.'});
+      return monitor.enabled;
+    });
+    if (active) await schedule(id, now() + (await state()).monitors.find(item => item.id === id).intervalSeconds * 1000);
+    return state();
   }
   async function stopAll() {
     await mutate(value => { for (const search of value.searches || []) { search.enabled = false; search.generation = crypto.randomUUID(); } });
@@ -377,12 +327,51 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       else api.tabs.get(tabId).then((tab) => { if (tab.status === "complete") finish(); }).catch(finish);
     });
   }
-  async function executeRead(tabId, rule, waitMs = 12000) {
-    const results = await api.scripting.executeScript({target: {tabId}, func: readPage, args: [rule, waitMs, readerForRule(rule)]});
-    const result = results[0]?.result;
-    if (!result) throw new Error("Chrome could not read the page. Check site access permissions.");
-    if (result.error) throw Object.assign(new Error(result.error), {kind: result.errorKind});
-    return result;
+  function waitForRead(signal) {
+    return new Promise((resolve, reject) => {
+      const finish = () => { signal.removeEventListener("abort", abort); resolve(); };
+      const timer = setTimeout(finish, 250);
+      const abort = () => { clearTimeout(timer); signal.removeEventListener("abort", abort); reject(new Error("Check cancelled.")); };
+      signal.addEventListener("abort", abort, {once: true});
+      if (signal.aborted) abort();
+    });
+  }
+  async function executeRead(tabId, rule, waitMs = 12000, signal = new AbortController().signal) {
+    const deadline = Date.now() + waitMs;
+    let emptyAttempts = 0;
+    while (true) {
+      if (signal.aborted) throw new Error("Check cancelled.");
+      let results;
+      try {
+        // Keep injected work synchronous. The worker waits for late listings,
+        // rather than leaving a Promise tied to a document being refreshed.
+        results = await api.scripting.executeScript({target: {tabId}, func: readPage, args: [rule, 0, readerForRule(rule)]});
+      } catch (error) {
+        if (/cannot access|missing host permission|manifest must request permission|extensions gallery cannot be scripted/i.test(error.message)) {
+          throw Object.assign(new Error("Chrome blocked access to this website. Open Chrome → Extensions → SpotAlert → Site access and allow the affected housing website, then reload its tab."), {kind: "permission"});
+        }
+        if (!/frame|context|document|navigation|removed/i.test(error.message)) throw error;
+      }
+      if (signal.aborted) throw new Error("Check cancelled.");
+      const frame = results?.find(item => item.frameId === 0) || results?.[0];
+      const result = frame?.result;
+      if (result) {
+        emptyAttempts = 0;
+        if (result.pending && Date.now() < deadline) {
+          await waitForRead(signal);
+          continue;
+        }
+        if (result.error) throw Object.assign(new Error(result.error), {kind: result.errorKind});
+        return result;
+      }
+      const inspection = (await api.scripting.executeScript({target: {tabId}, func: inspectReadState}).catch(() => []))?.[0]?.result;
+      if (signal.aborted) throw new Error("Check cancelled.");
+      if (inspection?.verification) throw Object.assign(new Error("The website is showing a verification prompt. Open the affected tab and complete it, then check again."), {kind: "verification"});
+      if (inspection?.login) throw Object.assign(new Error("The website requires a login. Open the affected tab and sign in, then check again."), {kind: "login"});
+      if (++emptyAttempts >= 2) throw Object.assign(new Error("Chrome returned no page data after retrying. Open the affected tab and press Check now again once its listings are loaded."), {kind: "loading"});
+      await waitForPage(tabId, signal, false);
+      await waitForRead(signal);
+    }
   }
   async function run(id, controller, scheduled) {
     const startedAt = now();
@@ -417,7 +406,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       await waitForPage(tab.id, controller.signal, tab.status === "complete");
       if (controller.signal.aborted) return;
       await patchRun(id, generation, (current) => { current.phase = "reading"; });
-      const result = await executeRead(tab.id, monitor.rule);
+      const result = await executeRead(tab.id, monitor.rule, 12000, controller.signal);
       if (!samePage(result.url, monitor.url)) throw new Error("The tab navigated away from the saved URL. Check login or update the monitor URL.");
       const evaluated = evaluateRule(result.samples, monitor.rule, monitor.filters);
       if (controller.signal.aborted) return;
@@ -513,333 +502,6 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       }
     } catch { /* Recreate only if the affected tab no longer exists. */ }
     return open(id);
-  }
-  async function applicationStatus(id, update) {
-    await mutate(value => {
-      const monitor = find(value, id);
-      const {diagnostic, ...details} = update;
-      const timestamp = now();
-      const trace = details.trace || monitor.application?.trace || [];
-      if (diagnostic) trace.push({at: timestamp, ...diagnostic});
-      monitor.application = {...monitor.application, stage: applicationStage(details, monitor.application?.stage), ...details, trace: trace.slice(-80), updatedAt: timestamp};
-    });
-  }
-  async function stopApplication(id) {
-    applications.get(id)?.controller.abort();
-    const tabId = find(await state(), id).application?.tabId;
-    preparationControllers.get(tabId)?.abort();
-    if (tabId) try {
-      await api.scripting.executeScript({target: {tabId}, func: () => { document.documentElement.dataset.spotalertApplicationStopped = "true"; }});
-    } catch { /* A closed or navigating tab needs no further action. */ }
-  }
-  async function runApplication(id, listing, signal, expectedProfileId, createAccount = false, signatureOptions = {}, snapshot = null) {
-    const monitor = find(await state(), id);
-    const origin = new URL(monitor.url).origin;
-    const site = siteForUrl(monitor.url);
-    const config = pageConfig(site);
-    const applicant = snapshot || (expectedProfileId ? (await profileLibrary()).profiles.find(entry => entry.id === expectedProfileId) : await assignedProfile(monitor));
-    if (!applicant) throw new Error("The selected profile was deleted. Choose a profile and use Apply again.");
-    const profile = validateProfile(applicant.details);
-    let tabId = null;
-    let filled = 0;
-    let claimed = false;
-    let claimedTabId = null;
-    const done = async (message, kind = "review", details = {}) => {
-      await applicationStatus(id, {status: "stopped", kind, message, tabId, filled, missingFields: details.missingFields || [], structure: details.structure || null, diagnostic: {event: "stopped", kind}});
-      return {tabId, moveInMessage: message, kind};
-    };
-    try {
-      {
-        const direct = safeListingUrl(listing.applicationUrl, monitor.url);
-        // Dynamic onclick URLs can be partial: follow the actual floor-plan action.
-        const initial = direct && !/floorplans\.aspx$/i.test(new URL(direct).pathname) && !site.application.preferFloorplanEntry ? direct : monitor.url;
-        const tab = await api.tabs.create({url: "about:blank", active: true});
-        tabId = tab.id;
-        claimApplicationTab(tabId); claimed = true; claimedTabId = tabId;
-        await waitForPage(tabId, signal, false);
-        if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
-        await api.tabs.update(tabId, {url: initial});
-      }
-      await applicationStatus(id, {status: "running", build: APPLICATION_BUILD, trace: [], applicantName: applicant.name, listingName: listing.name || listing.context || "Selected apartment", message: "Opening the selected apartment…", tabId, filled, missingFields: [], structure: null, diagnostic: {event: "started"}});
-      const deadline = Date.now() + 120000;
-      const dates = new Map();
-      const bookingAttempts = new Map();
-      const acted = new Set();
-      let previousAction = null, actionAt = 0;
-      let lastInspection = null;
-      for (let attempt = 0; attempt < 160 && Date.now() < deadline; attempt++) {
-        if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
-        await waitForPage(tabId, signal, false);
-        const tab = await api.tabs.get(tabId);
-        const url = new URL(tab.url);
-        if (url.origin !== origin) return done("The website opened another origin. Continue there manually.", "navigation");
-        await api.scripting.executeScript({target: {tabId}, func: () => { delete document.documentElement.dataset.spotalertApplicationStopped; }});
-        try {
-          const page = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: applicationStep, args: [false, createAccount]}))[0]?.result;
-          if (!page) return done("Chrome could not inspect the application page.", "error");
-          const inspection = `${url.pathname}:${page.step}:${page.kind}`;
-          if (inspection !== lastInspection) {
-            await applicationStatus(id, {diagnostic: {event: "page-inspected", path: url.pathname, step: page.step, kind: page.kind}});
-            lastInspection = inspection;
-          }
-          if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
-          if (page.kind === "loading") { await applicationStatus(id, {stage: "waiting-update"}); await new Promise(resolve => setTimeout(resolve, 250)); continue; }
-          if (["verification", "account-exists"].includes(page.kind)) return done(page.message, page.kind, page);
-          const path = url.pathname.toLowerCase();
-          if (path.endsWith(config.paths.booking) && page.kind === 'validation') return done(page.message, page.kind, page);
-          const key = path.endsWith(config.paths.booking) ? `${path}:${url.searchParams.get('UnitID')}:${url.searchParams.get('FloorPlanID')}` : page.key;
-          if (previousAction === key) {
-            if (["missing", "validation"].includes(page.kind)) return done(page.message, page.kind, page);
-            // CAPTCHA and booking requests can take time. Retry only after 15s
-            // on the same idle booking form, at most three clicks total.
-            if (path.endsWith(config.paths.booking) && Date.now() - actionAt > config.booking.retryAfterMs && (bookingAttempts.get(key) || 0) < config.booking.maxAttempts) {
-              bookingAttempts.set(key, (bookingAttempts.get(key) || 0) + 1);
-              await applicationStatus(id, {message: "The booking page is idle and has not advanced. Retrying Start Application…", diagnostic: {event: "booking-retry", attempt: bookingAttempts.get(key)}});
-              actionAt = Date.now();
-              const retry = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: startCanvasApplication, args: [dates.get(key), config.booking.waitMs]}))[0]?.result;
-              await applicationStatus(id, {diagnostic: {event: "booking-retry-result", started: !!retry?.started, ...(retry?.diagnostics || {})}});
-              if (!retry?.started) return done(retry?.message || "Start Application could not be retried. Check the booking tab.", "date");
-              actionAt = Date.now();
-              continue;
-            }
-            if (Date.now() - actionAt > config.booking.retryAfterMs) return done("The website did not advance after the available attempts. Check the application tab for verification or an error.", "waiting");
-            await new Promise(resolve => setTimeout(resolve, 250)); continue;
-          }
-          if (previousAction?.includes(config.paths.booking) && path.endsWith(config.paths.applicant)) {
-            await applicationStatus(id, {diagnostic: {event: "booking-advanced", path: url.pathname, step: page.step}});
-          }
-          previousAction = null;
-          if (path.endsWith(config.paths.floorplans)) {
-            if (acted.has(key)) return done("The website returned to the listing page. Check availability before applying again.", "navigation");
-            const result = (await api.scripting.executeScript({target: {tabId}, func: openApplication, args: [listing]}))[0]?.result;
-            if (!result?.opened) return done(result?.reason || "Could not open this floor plan.", "availability");
-            acted.add(key); previousAction = key; actionAt = Date.now();
-            await applicationStatus(id, {stage: "opening", message: "Opening availability for the selected floor plan…"});
-          } else if (path.endsWith(config.paths.units)) {
-            if (acted.has(key)) return done("The website returned to apartment selection. Review the available units.", "availability");
-            const result = (await api.scripting.executeScript({target: {tabId}, func: canvasBookingLink, args: [listing]}))[0]?.result;
-            if (!result?.opened && !result?.url) return done(result?.error || "No booking action found for this floor plan.", "availability");
-            if (result.url) await api.tabs.update(tabId, {url: result.url});
-            acted.add(key); previousAction = key; actionAt = Date.now();
-            await applicationStatus(id, {stage: "opening", message: "Opening the apartment booking form…"});
-          } else if (path.endsWith(config.paths.booking)) {
-            if (!dates.has(key)) {
-              const date = (await api.scripting.executeScript({target: {tabId}, func: selectMoveInDate, args: [profile]}))[0]?.result;
-              if (!date?.moveInDate) return done(date?.moveInMessage || "Choose a move-in date on the website.", "date");
-              dates.set(key, date.moveInDate);
-              await applicationStatus(id, {stage: "selecting-date", message: date.moveInMessage, moveInDate: date.moveInDate, moveInMessage: date.moveInMessage, diagnostic: {event: "date-selected", date: date.moveInDate}});
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              continue;
-            }
-            // Remember the attempt before execution: successful navigation can
-            // destroy the injected context before Chrome returns its result.
-            previousAction = key; actionAt = Date.now();
-            bookingAttempts.set(key, 1);
-            const next = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: startCanvasApplication, args: [dates.get(key), config.booking.waitMs]}))[0]?.result;
-            await applicationStatus(id, {diagnostic: {event: "booking-click-result", started: !!next?.started, ...(next?.diagnostics || {})}});
-            if (!next?.started) return done(next?.message || "Check the booking page before continuing.", "date");
-            bookingAttempts.set(key, 1);
-            previousAction = key; actionAt = Date.now();
-            await applicationStatus(id, {stage: "starting", message: "Starting the application…"});
-          } else if (path.endsWith(config.paths.applicant)) {
-            if (acted.has(key)) return done("This step has already been continued. Review the website before trying again.", "waiting");
-            if (signatureOptions.enabled && config.agreementSignature && page.step === config.agreementSignature.step) {
-              const details = (await api.scripting.executeScript({target: {tabId}, world: 'MAIN', func: fillApplicationForm, args: [profile, config]}))[0]?.result;
-              filled += details?.count || 0;
-              const prepared = (await api.scripting.executeScript({target: {tabId}, world: 'MAIN', func: prepareCanvasSignature, args: [signatureOptions.screening === true, config]}))[0]?.result;
-              if (prepared?.error || !prepared?.signatureSelected || !prepared?.agreementChecked || (signatureOptions.screening && !prepared?.screeningChecked)) return done(prepared?.error || 'The website did not confirm the selected agreement and signature options.', 'signature');
-              return done(prepared.message, 'signature');
-            }
-            if (["documents", "review", "login", "unfamiliar"].includes(page.kind)) return done(page.message, page.kind, page);
-            const result = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: fillApplicationForm, args: [profile, config]}))[0]?.result;
-            filled += result?.count || 0;
-            await applicationStatus(id, {stage: "filling", filled, message: `Filled ${filled} fields from Personal information…`});
-            // Reinspect after field changes; never advance based on stale validation.
-            const next = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: applicationStep, args: [true, createAccount]}))[0]?.result;
-            if (next?.kind === "loading") { await new Promise(resolve => setTimeout(resolve, 250)); continue; }
-            if (!next?.advanced) return done(next?.message || "Details filled. Review this step on the website.", next?.kind, next || {});
-            acted.add(key); previousAction = key; actionAt = Date.now();
-            await applicationStatus(id, {stage: "waiting-update", message: "Continuing to the next application step…"});
-          } else return done("This page needs your review before continuing. Download its field structure to help add support.", "unfamiliar", {structure: (await api.scripting.executeScript({target: {tabId}, func: captureApplicationStructure}))[0]?.result});
-        } catch (error) {
-          if (!/frame|context|document|navigation|removed/i.test(error.message)) throw error;
-          await applicationStatus(id, {diagnostic: {event: "navigation-interrupted-script"}});
-          await new Promise(resolve => setTimeout(resolve, 250));
-        }
-      }
-      return done("The application is taking longer than expected. Review the website directly, or use Apply to start a new run.", "waiting");
-    } catch (error) {
-      const closed = /No tab with id|Invalid tab ID|tab.*closed/i.test(error.message);
-      if (closed) tabId = null;
-      return done(signal.aborted ? "Application automation stopped." : closed ? "The application tab was closed. Use Apply on the apartment to start a new run." : error.message, signal.aborted ? "cancelled" : "error");
-    } finally {
-      if (claimed) applicationTabs.delete(claimedTabId);
-    }
-  }
-  async function openListing(id, listingId, expectedProfileId = null, createAccount = false, signatureOptions = {}) {
-    if (applications.has(id)) {
-      if (applications.get(id).searchId) throw new Error('A profile search is applying at this location. Wait for it to finish or pause that search.');
-      return applications.get(id).promise;
-    }
-    const monitor = find(await state(), id);
-    const listing = [...(monitor.alert?.listings || []), ...monitor.samples].find(sample => listingKey(sample) === listingId);
-    if (!listing) throw new Error("This listing is no longer in the saved results. Run a new check.");
-    const controller = new AbortController();
-    const run = {controller};
-    applications.set(id, run);
-    run.promise = (async () => {
-      await applicationStatus(id, {listingId: listingKey(listing)});
-      return runApplication(id, listing, controller.signal, expectedProfileId, createAccount, signatureOptions);
-    })().finally(() => applications.delete(id));
-    return run.promise;
-  }
-  // Searches share page reads, but retain their own matches and action records.
-  async function reconcileSearchLocations() {
-    const transitions = await mutate(value => {
-      const wanted = new Set((value.searches || []).filter(search => search.enabled).flatMap(search => search.locationIds));
-      const transitions = [];
-      for (const monitor of value.monitors) {
-        const start = wanted.has(monitor.id) && !monitor.enabled;
-        const stop = !wanted.has(monitor.id) && monitor.searchManaged;
-        if (!start && !stop) continue;
-        Object.assign(monitor, {enabled: start, searchManaged: start, phase: start ? 'waiting' : 'paused', nextCheckAt: null, generation: crypto.randomUUID()});
-        history(monitor, {kind: start ? 'started' : 'paused', message: start ? 'Started for profile searches.' : 'No active profile searches use this location.'});
-        transitions.push({id: monitor.id, enabled: start});
-      }
-      return transitions;
-    });
-    for (const {id, enabled} of transitions) {
-      if (enabled) check(id, true).catch(console.error);
-      else { clearFastTimer(id); cancel(id); await api.alarms.clear(alarmName(id)); }
-    }
-  }
-  async function readinessFor(search, library = null) {
-    library ||= await profileLibrary();
-    const email = (await api.storage.local.get(EMAIL_KEY))[EMAIL_KEY] || {};
-    const result = searchReadiness(search, library.profiles, email);
-    for (const location of result.locations) {
-      const monitor = (await state()).monitors.find(item => item.id === location.id);
-      if (monitor && !(await api.permissions.contains({origins: [sitePattern(monitor.url)]}))) {
-        result.blockers.push(`${location.name}: website access is missing. Restore access in Chrome extension settings.`);
-        location.ready = false;
-      }
-      if (monitor && ['login', 'verification'].includes(monitor.errorKind)) result.warnings.push(`${location.name}: complete the ${monitor.errorKind} prompt in the website tab.`);
-    }
-    result.canStart = !result.blockers.length;
-    result.ready = result.canStart && result.locations.every(location => location.ready);
-    return result;
-  }
-  async function repeatSearchAction(message) {
-    if (message.confirmed !== true) throw new Error('Review and explicitly authorize another attempt first.');
-    if (!['email', 'autoApply'].includes(message.channel)) throw new Error('Choose a supported action.');
-    const library = await profileLibrary();
-    const saved = (await state()).searches.find(search => search.id === message.id);
-    if (!saved) throw new Error('Search not found.');
-    if (!saved.enabled || !saved.actions[message.channel]) throw new Error('Start this search with the requested action enabled before trying again.');
-    if (!saved.locationIds.includes(message.monitorId)) throw new Error('This location is not part of the search.');
-    const readiness = await readinessFor({...saved, actions: {[message.channel]: true}}, library);
-    if (!readiness.canStart) throw new Error(readiness.blockers.join(' '));
-    const entry = library.profiles.find(profile => profile.id === saved.profileId);
-    const snapshot = {id: entry.id, name: entry.name, details: validateProfile(entry.details)};
-    const job = await mutate(value => {
-      const search = value.searches.find(search => search.id === message.id);
-      if (!search?.enabled || search.generation !== saved.generation || !search.actions[message.channel]) throw new Error('Start this search with the requested action enabled before trying again.');
-      if (!search.locationIds.includes(message.monitorId)) throw new Error('This location is not part of the search.');
-      const monitor = find(value, message.monitorId);
-      const result = search.results?.[message.monitorId];
-      if (!result || !Number.isFinite(result.at) || monitor.error || now() - result.at > Math.max(60000, monitor.intervalSeconds * 3000)) throw new Error('Run a successful fresh location check before trying again.');
-      const listing = result.matches.find(item => item.matched && listingKey(item) === message.listingId);
-      if (!listing) throw new Error('This apartment no longer matches the search.');
-      const key = searchClaimKey(search.profileId, message.monitorId, message.listingId, message.channel);
-      const previous = value.searchClaims[key];
-      if (!previous || claimActionId(previous) !== message.expectedClaimId) throw new Error('The previous action changed. Review its latest outcome and try again.');
-      if (['queued', 'running'].includes(previous.status)) throw new Error('This action is already queued or running.');
-      const action = {id: crypto.randomUUID(), at: now(), monitorId: message.monitorId, listingId: listingKey(listing), listingName: listing.name || listing.context || 'Apartment', channel: message.channel, status: 'queued', message: 'Another attempt explicitly authorized.', repeatedFrom: claimActionId(previous)};
-      value.searchClaims[key] = {...action, searchId: search.id, attemptCount: (previous.attemptCount || 1) + 1,
-        previousAttempts: [{id: claimActionId(previous), at: previous.at || null, status: previous.status || 'recorded', message: previous.message || 'Previous attempt recorded.', tabId: previous.tabId || null}, ...(previous.previousAttempts || [])].slice(0, 10)};
-      search.activity.unshift(action);
-      return {previousClaim: structuredClone(previous), searchId: search.id, generation: search.generation, key, actionId: action.id, monitorId: message.monitorId, listing: structuredClone(listing), snapshot, channel: message.channel, createAccount: search.createAccount};
-    });
-    searchActions = searchActions.then(() => executeSearchAction(job)).catch(console.error);
-    return state();
-  }
-  async function matchSearches(monitorId, samples) {
-    const library = await profileLibrary();
-    const jobs = await mutate(value => {
-      const monitor = find(value, monitorId);
-      const jobs = [];
-      for (const search of (value.searches || []).filter(item => item.enabled && item.locationIds.includes(monitorId))) {
-        const entry = library.profiles.find(item => item.id === search.profileId);
-        if (!entry) { search.enabled = false; search.error = "The profile was deleted."; continue; }
-        const snapshot = {id: entry.id, name: entry.name, details: validateProfile(entry.details)};
-        const matches = evaluateRule(samples, monitor.rule, {clientPreferences: snapshot.details}).matches.map(sample => ({...sample, applicationUrl: safeListingUrl(sample.applicationUrl, monitor.url), pageUrl: safeListingUrl(sample.pageUrl, monitor.url) || monitor.url}));
-        search.results ||= {};
-        search.results[monitorId] = {at: now(), matches};
-        search.activity ||= [];
-        for (const listing of matches.filter(item => item.matched)) {
-          for (const channel of ['autoApply', 'email'].filter(channel => search.actions[channel])) {
-            // Permanent per-profile claims also deduplicate overlapping searches.
-            const key = searchClaimKey(entry.id, monitorId, listingKey(listing), channel);
-            if (value.searchClaims[key]) continue;
-            const action = {id: crypto.randomUUID(), at: now(), monitorId, listingId: listingKey(listing), listingName: listing.name || listing.context || 'Apartment', channel, status: 'queued', message: 'Waiting to run'};
-            value.searchClaims[key] = {...action, searchId: search.id};
-            search.activity.unshift(action);
-            jobs.push({generation: search.generation, key, searchId: search.id, actionId: action.id, monitorId, listing: structuredClone(listing), snapshot, channel, createAccount: search.createAccount});
-          }
-        }
-        search.activity = [...search.activity.filter(item => ['queued', 'running'].includes(item.status)), ...search.activity.filter(item => !['queued', 'running'].includes(item.status)).slice(0, 100)].sort((a, b) => b.at - a.at);
-      }
-      return jobs;
-    });
-    for (const job of jobs) searchActions = searchActions.then(() => executeSearchAction(job)).catch(console.error);
-  }
-  async function executeSearchAction(job) {
-    const {searchId, actionId, monitorId, listing, snapshot, channel} = job;
-    const update = (status, message, extra = {}) => mutate(value => {
-      const action = value.searches?.find(item => item.id === searchId)?.activity.find(item => item.id === actionId);
-      if (action) Object.assign(action, {status, message, ...extra});
-      if (claimActionId(value.searchClaims[job.key]) === actionId) Object.assign(value.searchClaims[job.key], {status, message, ...extra});
-    });
-    const cancelQueued = message => mutate(value => {
-      const action = value.searches?.find(item => item.id === searchId)?.activity.find(item => item.id === actionId);
-      if (action) Object.assign(action, {status: 'cancelled', message});
-      if (claimActionId(value.searchClaims[job.key]) === actionId) {
-        if (job.previousClaim) value.searchClaims[job.key] = job.previousClaim;
-        else delete value.searchClaims[job.key];
-      }
-    });
-    let search = (await state()).searches?.find(item => item.id === searchId);
-    if (!search?.enabled || search.generation !== job.generation || !search.actions[channel]) return cancelQueued('Search changed or paused before execution.');
-    if (!search.results?.[monitorId]?.matches.some(item => item.matched && listingKey(item) === listingKey(listing))) return cancelQueued('The listing no longer matches.');
-    const library = await profileLibrary();
-    if (!library.profiles.some(item => item.id === snapshot.id)) return cancelQueued('The profile was deleted.');
-    await update('running', channel === 'email' ? 'Sending to the profile holder…' : 'Starting application…');
-    try {
-      if (channel === 'autoApply') {
-        // Manual applications and automated searches never share an active run.
-        while (applications.has(monitorId)) {
-          await applications.get(monitorId).promise.catch(() => {});
-        }
-        search = (await state()).searches?.find(item => item.id === searchId);
-        if (!search?.enabled || search.generation !== job.generation) return cancelQueued('Search changed or paused before application started.');
-        if (!search.results?.[monitorId]?.matches.some(item => item.matched && listingKey(item) === listingKey(listing))) return cancelQueued('The apartment no longer matches before application start.');
-        const controller = new AbortController();
-        const run = {controller, searchId};
-        applications.set(monitorId, run);
-        run.promise = runApplication(monitorId, listing, controller.signal, snapshot.id, job.createAccount, {}, snapshot).finally(() => applications.delete(monitorId));
-        const result = await run.promise;
-        await update(result.kind === 'cancelled' ? 'cancelled' : result.kind === 'error' ? 'failed' : 'review', result.moveInMessage || 'Review the application tab.', {tabId: result.tabId});
-      } else {
-        const stateValue = await state();
-        search = stateValue.searches?.find(item => item.id === searchId);
-        if (!search?.enabled || search.generation !== job.generation) return cancelQueued('Search changed or paused before email delivery.');
-        const monitor = find(stateValue, monitorId);
-        const application = search.activity.find(item => item.monitorId === monitorId && item.channel === 'autoApply' && item.listingId === listingKey(listing));
-        const body = [`Hello ${snapshot.details.firstName || snapshot.name},`, '', `A matching apartment was found for ${search.name}.`, monitor.name, listing.name || listing.context || 'Apartment', listing.rent ? `Rent: ${listing.rent}` : '', listing.size ? `Size: ${listing.size}` : '', listing.applicationUrl || listing.pageUrl || monitor.url, application ? `Application: ${application.message}` : '', '', 'Availability may change. Review all application details on the housing website.'].filter(Boolean).join('\n');
-        await sendEmailAlert(api, {id: actionId}, `SpotAlert · ${listing.name || 'Matching apartment'}`, body, {to: snapshot.details.email});
-        await update('sent', `Email accepted by provider for ${snapshot.details.email}.`);
-      }
-    } catch (error) { await update('failed', error.message); }
   }
   async function captureApplications(id, generation, signal) {
     // Claim before opening, so repeated five-second checks cannot reopen a link.
@@ -981,6 +643,22 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
         return {enabled: true, path: disk.folder};
       }
       case "open-profile-folder": return profileFolder("open");
+      case "create-test-profiles": {
+        const library = await profileLibrary();
+        const missing = [1, 2].filter(index => !library.profiles.some(entry => entry.id === `spotalert-test-profile-${index}`));
+        if (library.profiles.length + missing.length > 50) throw new Error("Make room for two test profiles first (50 profiles maximum).");
+        for (const index of [1, 2]) {
+          const position = library.profiles.findIndex(entry => entry.id === `spotalert-test-profile-${index}`);
+          if (position < 0) library.profiles.push(createTestProfile(index));
+          else if (message.regenerate === true) {
+            if (library.profiles[position].testProfile !== true) throw new Error("This profile identifier is already in use by a saved applicant.");
+            library.profiles[position] = createTestProfile(index);
+          }
+        }
+        library.activeId = "spotalert-test-profile-1";
+        await saveLibrary(library);
+        return library;
+      }
       case "create-profile": {
         const library = await profileLibrary();
         if (library.profiles.length >= 50) throw new Error("You can save up to 50 profiles.");
@@ -1112,8 +790,8 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       case "start": await setEnabled(message.id, true); return state();
       case "stop-all": return stopAll();
       case "pause":
-        if ((await state()).searches?.some(search => search.enabled && search.locationIds.includes(message.id))) throw new Error("Pause the searches using this location first, or use Stop all.");
         await setEnabled(message.id, false); return state();
+      case "cancel-check": return cancelCheck(message.id);
       case "check": await check(message.id); return state();
       case "set-interval": return setIntervalSeconds(message.id, message.intervalSeconds);
       case "preview": return preview(message.monitor);

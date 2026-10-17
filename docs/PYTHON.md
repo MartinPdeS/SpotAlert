@@ -1,6 +1,8 @@
 # Legacy Python tools
 
-The main SpotAlert app is now a standalone Chrome extension. These Python
+The main SpotAlert app is a [standalone Chrome extension](../README.md).
+For optional applicant-file storage, see [the profile helper](PROFILE_HELPER.md).
+The CLI/TUI below are legacy tools, independent of extension profiles and searches. These Python
 commands remain available for HTTP/API and separate-browser checks. Saved
 profiles using `fetch_mode: extension` should be changed to `browser`; the
 current extension no longer communicates with the Python bridge.

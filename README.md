@@ -2,8 +2,9 @@
 
 A standalone Chrome extension for monitoring website availability in your
 normal browser session. Create a search for a saved profile, select locations,
-and choose auto-apply, email, or both. **No Python process, TUI, native
-messaging bridge, or remote-debugging setup is needed.**
+and choose auto-apply, email, or both. **Monitoring and applications run entirely in Chrome.** Python is optional for
+[local profile backups](docs/PROFILE_HELPER.md), browser development tests, and the
+[legacy CLI/TUI](docs/PYTHON.md).
 
 ## Install or update
 
@@ -21,9 +22,59 @@ you can close the TUI. No terminal command is needed to use the extension.
 
 The expand button opens the same interface as a full-page developer workspace.
 
+## Workspace
+
+Navigation follows **Searches, Locations, Profiles, Clients, Settings**.
+**Searches** manages applicant-specific matching and email/application actions.
+**Locations** manages general website monitoring without applicant criteria.
+Each location shows **General monitoring · On/Off** and whether profile searches
+also use it. **Stop general monitoring** leaves profile searches running; pausing
+the last profile search leaves general monitoring running if it is on. Page reads
+are shared across both modes.
+
+While a page check is running, **Cancel check** stops that check and keeps the next
+scheduled check. **Stop general monitoring** stops recurring general checks.
+**Stop all** stops both general monitoring and every profile search. Running
+applications have a separate **Cancel application** control; cancellation cannot
+undo requests already sent to a website.
+
+Failed, pending, and outdated checks are distinct from a successful check with no
+matches. Previous results remain visible with an unconfirmed label. Error panels
+explain the impact, give recovery steps, and offer **Retry check**.
+
+Searches opens first. Each row shows the applicant, configured criteria, match
+count, and Start/Pause. Edit and Delete are in the row’s **•••** menu. Open the
+match count or **Details** for apartments, location status, exclusions, delivery
+history, and duplicate protection. Each apartment has separate **View apartment**
+and **Apply** actions.
+
+Click **Needs attention** to see specific recovery tasks: complete an applicant
+profile, open an application, review a location, or inspect a failed email and
+its settings. Successful subsequent attempts replace older failure notices.
+
+Profiles combine the applicant selector, name, and readiness in one header.
+Missing required details link directly to the matching field; optional fields
+sit in collapsible sections. Required fields use an asterisk. The no-middle-name checkbox hides and clears the middle
+name; employment details hide when the applicant is retired or never employed.
+Partial profiles can be saved, and the Save profile bar stays visible while
+scrolling. Fictional applicants carry a **Test profile** badge.
+
+Locations keeps its overview collapsed and puts the interval and monitor
+configuration under **Options**. Narrow windows use a location dropdown. Debug captures, build information, rule exports, and the
+optional local profile helper are under **Settings → Advanced**.
+
+Error notices include **Copy diagnostics** and stay visible until dismissed or
+replaced by a new notification. **Settings → Advanced → Error diagnostics** also
+lets you copy or download a report. It includes the extension/build versions,
+location failure categories and check times, application traces, and the latest
+20 dashboard errors from the current session. Monitor status survives reopening
+the dashboard. Reports omit profile records, email settings, request bodies, and
+page contents; common credentials, email addresses, and URL paths in error text
+are masked. Review the report before sharing it.
+
 ## Debug application links
 
-Expand **Debug capture** in the sidebar and enable **Open and capture application
+Open **Settings → Advanced → Debug capture** and enable **Open and capture application
 links**. This is off by default. After a successful refresh it opens matching,
 available direct HTTP(S) application links in background tabs and inspects their
 loaded pages. Opening a link may itself start a reservation on the provider's site.
@@ -32,7 +83,7 @@ are filled or submitted by debug capture.
 
 Each link is opened once per availability period, with up to three new captures
 per check. Repeated checks and worker restarts do not reopen an unchanged link.
-The latest 20 captures are stored in Chrome extension storage; the sidebar shows
+The latest 20 captures are stored in Chrome extension storage; Advanced settings show
 the latest five. **Export captures** downloads all retained captures as JSON.
 **Clear captures** deletes saved output without reopening already-seen links.
 
@@ -50,12 +101,12 @@ inspection. Disabling debug mode or Stop all cancels pending capture work.
 
 Click **Apply** on an apartment, choose a profile, and confirm. For Canvas, the dialog has an optional **Include Canvas agreements & signature** toggle. It checks the screening agreement (`chkTandCAgree`), bottom agreement (`chkAgreement`), and selects **Signature Type 1**. Review the terms before enabling; Save and final submission remain manual. The toggle starts off for each application. Run `.venv/bin/python scripts/test_signature_browser.py` to check the selections against isolated synthetic pages.
 
-Open **Personal information** in the sidebar to save your first and last name,
+Open **Profiles** to save your first and last name,
 email, phone, street address, postal code, and city. These details stay in
 Chrome local extension storage, separate from monitor history and rule exports.
 **Delete saved details** clears them. An application readiness badge checks that first name, last name, valid email, and phone are saved; address fields remain optional. Additional application requirements still need review.
 
-Personal information includes identity and contact details, moving preferences,
+Profiles include identity and contact details, moving preferences,
 current housing, employment and income, emergency contacts, education, application
 choices, and optional identification/bank details. A completeness indicator tracks
 fields required by the current Canvas applicant form. Existing profiles are preserved.
@@ -66,9 +117,10 @@ allowed date if none is saved), clicks **Start Application**, and fills supporte
 steps from saved details. It follows ordinary Next/Continue actions until the website
 needs missing information, documents, verification, agreements, registration/login,
 payment, lease review, or final submission. Registration fields (including a saved
-password) are filled, but account creation is manual. A progress card shows where
-it stopped, opens the application tab, and offers Continue application after you
-complete the manual step. Stop application and Stop all halt automation. Calendar limits and excluded weekends are respected. The
+password) are filled. Review **Create an account if needed** in the Apply
+confirmation or profile search: enabling it allows account creation; otherwise
+registration stays manual. Existing-account messages stop automation so you can log in. Application diagnostics show where
+it stopped and open the application tab so you can complete the remaining steps. Stop application and Stop all halt automation. Calendar limits and excluded weekends are respected. The
 flow waits for Canvas's background form updates and leaves monitoring on its original
 tab. Login or verification prompts may require manual completion.
 
@@ -174,11 +226,19 @@ synced to another device. Access to supported websites is declared upfront.
 The extension uses plain JavaScript modules, HTML, and CSS. No build step or npm
 installation is required; edit the files and reload the extension in Chrome.
 
-- [`core.js`](SpotAlert/chrome_extension/core.js): validation, matching, and the OurDomain adapter.
-- [`engine.js`](SpotAlert/chrome_extension/engine.js): persisted monitoring state, alarms, tab refreshes, and notifications.
-- [`page.js`](SpotAlert/chrome_extension/page.js): page text extraction.
-- [`background.js`](SpotAlert/chrome_extension/background.js): Chrome event routing and extension-message validation.
-- [`panel.html`](SpotAlert/chrome_extension/panel.html), [`panel.css`](SpotAlert/chrome_extension/panel.css), [`panel.js`](SpotAlert/chrome_extension/panel.js): side panel and full-page workspace.
+- [`sites/`](SpotAlert/chrome_extension/sites/): provider-specific rules and application configuration.
+- [`core.js`](SpotAlert/chrome_extension/core.js): shared validation and matching.
+- [`engine.js`](SpotAlert/chrome_extension/engine.js): monitor state and command coordination.
+- [`scheduler.js`](SpotAlert/chrome_extension/scheduler.js): fast timers and recovery alarms.
+- [`profile-store.js`](SpotAlert/chrome_extension/profile-store.js): Chrome storage and optional profile-folder synchronization.
+- [`application-runner.js`](SpotAlert/chrome_extension/application-runner.js): application runs, cancellation, and diagnostics.
+- [`search-actions.js`](SpotAlert/chrome_extension/search-actions.js): profile matching, duplicate claims, and queued delivery/application actions.
+- [`page.js`](SpotAlert/chrome_extension/page.js): page extraction and listing actions.
+- [`background.js`](SpotAlert/chrome_extension/background.js): Chrome event routing and message validation.
+- [`panel.js`](SpotAlert/chrome_extension/panel.js): monitoring and profile workspace, with search UI in [`panel-searches.js`](SpotAlert/chrome_extension/panel-searches.js) and email/client UI in [`panel-delivery.js`](SpotAlert/chrome_extension/panel-delivery.js).
+
+Start with `make extension` for installation instructions and `make extension-test`
+for behavior checks. `make install` installs the optional Python developer tools.
 
 Behavior tests use Node 20 or newer:
 
@@ -205,15 +265,19 @@ profile editing, and debug captures. Search and email tests run with:
 python scripts/test_searches_browser.py
 python scripts/test_email_browser.py
 python scripts/test_panel_browser.py
+python scripts/test_profile_browser.py
+python scripts/test_application_browser.py
+python scripts/test_workspace_browser.py
 ```
 It saves UI screenshots under `artifacts/extension`. Your Chrome profile and
-rental website are not accessed. The Python runtime is only needed for this test.
+rental website are not accessed. The Python runtime is needed only for browser tests, optional helpers, and legacy tools.
 
 The older HTTP/API checker and TUI remain available as
 [legacy Python tools](docs/PYTHON.md). Their `browser` mode uses a separate
 persistent Chrome profile; their former `extension` mode now directs users to
-the standalone app. The native bridge modules remain for compatibility tests
-and are not used by the standalone extension.
+the standalone app. The old monitoring bridge modules remain for compatibility tests. The separate
+optional applicant-profile helper uses native messaging only for local file storage;
+see [profile helper setup](docs/PROFILE_HELPER.md).
 
 ### Email delivery settings
 
@@ -235,13 +299,26 @@ Click the SpotAlert toolbar icon to open the dashboard in a full-width Chrome ta
 
 If Apply stalls, expand Application diagnostics under the selected location. It shows the dashboard/run build, inspected pages, date selection, Start Application click and retry results, and stopping reason. Download debug report exports only control metadata; it excludes profile details, passwords, page content and URL query strings. Reload the unpacked extension at chrome://extensions and reopen the dashboard before reproducing a failure on a new build. Background-worker restarts are recorded separately from website failures.
 
-Personal information supports named saved applicant profiles. Create or select a profile, then save its details. Apply and Fill application form use the selected saved profile, including its account password. Existing details migrate into My profile; profiles stay in Chrome local storage.
+Profiles support named saved applicant profiles. Create or select a profile, then save its details. Apply and Fill application form use the selected saved profile, including its account password. Existing details migrate into My profile; profiles stay in Chrome local storage.
 
 The Clients tab prepares an email questionnaire using the configured Resend sender, with a client recipient and your reply-to address. Preview or copy it before sending. Paste the completed details block to review answers and create a new selected profile. The questionnaire includes an optional existing account password, stored with the imported profile and masked in the review preview. Identification numbers and banking details are not requested by email. Email replies are imported manually; Gmail access is not required.
 
-Local profile storage (macOS/Linux): run `.venv/bin/python -m SpotAlert.profile_host --install` once, then reload the extension. The installed helper migrates Chrome's saved applicants into `SpotAlert/local_profiles/profiles.json`, mirrors subsequent profile saves, and restores that file on extension startup. Personal information includes See profile folder to open it in Finder/file manager. The folder and machine-specific launcher are ignored by Git. This JSON file contains personal details and passwords in plain text with owner-only file permissions; back it up privately. If the checkout or virtual environment moves, rerun the installer. Removing the extension or clearing its storage leaves this folder intact.
+Local profile storage is an optional macOS/Linux helper. See [setup, storage format, and privacy details](docs/PROFILE_HELPER.md). Monitoring and applications work without it.
 
-Apply asks you to choose a saved profile for each application. Moving preferences include a maximum published monthly rent, minimum size in square metres, apartment type, and earliest move-in date. These preferences filter profile-search results; unknown rent/size does not pass a configured limit. Rent ranges use the highest published amount. Apply confirms the applicant, apartment, rent and move-in preference before filling, then reports the date selected from the actual website calendar. Personal information shows only the selected profile’s readiness and missing details, without listing locations. Each search shows its application and email history, with explicit authorization required for another attempt. Email Sent means the provider accepted the request, not that the recipient read it.
+### Two realistic fictional test profiles
+
+In **Profiles → Profile actions**, click
+**Generate two realistic test profiles**. This adds two clearly named fictional
+applicants and selects the first one. Both have generated passwords, birth dates, and different housing
+preferences. Their emails use `example.com`; identification and bank fields
+stay empty. Use them with synthetic forms, rather than real applications or email delivery.
+Each click regenerates only the two marked test profiles, without adding duplicates.
+Other saved applicants are preserved. Names, addresses, careers, income and moving
+preferences are coherent fictional examples.
+**Generate password** changes only the password of the selected profile; it leaves
+birth dates and other identity details untouched.
+
+Apply asks you to choose a saved profile for each application. Moving preferences include a maximum published monthly rent, minimum size in square metres, apartment type, and earliest move-in date. These preferences filter profile-search results; unknown rent/size does not pass a configured limit. Rent ranges use the highest published amount. Apply confirms the applicant, apartment, rent and move-in preference before filling, then reports the date selected from the actual website calendar. Profiles show only the selected profile’s readiness and missing details, without listing locations. Each search shows its application and email history, with explicit authorization required for another attempt. Email Sent means the provider accepted the request, not that the recipient read it.
 
 Apply confirmation includes Create an account if needed. When enabled, the supported registration form is filled and Create My Account is clicked once after required details pass validation. Existing-email errors stop the flow and direct you to log in. Verification, application agreements, charges and final submission remain manual. Account creation accepts the website account Terms and Privacy Policy; marketing subscriptions are left untouched.
 
@@ -259,7 +336,7 @@ The shared engine handles navigation, validation, retries, monitoring and profil
 
 Apply is the dashboard’s application action. It asks which saved profile to use for that run and offers the Canvas agreement/signature opt-in in the same dialog. Choosing a profile for Apply does not change the active profile or assign it to the location. Apply shows Applying while its single run executes. The dashboard has no ongoing application card; run results and technical details remain in collapsed Application diagnostics. Verification and missing-detail stops offer a button to the affected tab; each Apply runs continuously and stops at review or when input is required. There are no resume or retry controls; start a fresh run with Apply. Signing, payment and final submission still require review on the website.
 
-Application operations hold a per-tab lock across asynchronous work; duplicate preparation or retry requests cannot change that tab concurrently. Locks release after success, cancellation or failure. Worker restarts mark interrupted runs for review. The dashboard displays the extension version and application build, checks its worker and source build periodically, and offers extension-settings and dashboard-reload buttons if they differ. Application writes from a stale dashboard are rejected before execution.
+Application operations hold a per-tab lock across asynchronous work; duplicate preparation or retry requests cannot change that tab concurrently. Locks release after success, cancellation or failure. Worker restarts mark interrupted runs for review. Settings → Advanced displays the extension version and application build, checks its worker and source build periodically, and offers extension-settings and dashboard-reload buttons if they differ. Application writes from a stale dashboard are rejected before execution.
 
 ### Profile-oriented searches
 
@@ -330,7 +407,7 @@ accept an application. Review profile details from the dialog to fix missing dat
 
 #### Review duplicate protection and authorize another attempt
 
-Listing badges and **Previous actions & duplicate protection** show the latest
+Listing badges and the **Activity** timeline show the latest
 email/application attempt, date and outcome for that profile and location across
 all searches, including deleted searches. Older records without retained details
 are labeled accordingly. An email accepted by the provider is not proof of inbox
@@ -338,7 +415,7 @@ delivery; an application attempt is not a final submission.
 
 To deliberately repeat an action, start the search with that channel enabled,
 obtain a fresh successful result where the apartment still matches, then choose
-**Authorize another email/application**. Review the previous outcome and explicitly
+**Send again** or **Try again** in Activity. Review the previous outcome and explicitly
 check the authorization box. This schedules one additional attempt and preserves
 duplicate protection. Concurrent clicks and outdated dialogs cannot schedule the
 same authorization twice. Pausing before an authorized repeat executes restores

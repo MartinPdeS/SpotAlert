@@ -47,6 +47,7 @@ def main():
             site.goto(URL)
             panel = context.new_page()
             panel.goto(worker.url.replace('background.js', 'panel.html'))
+            panel.get_by_role("tab", name="Locations", exact=True).click()
             expect(panel.locator('#monitor-count')).to_have_text('3')
             panel.get_by_role('button', name='Canvas · Rotterdam Blaak', exact=False).click()
             panel.get_by_role('button', name='↻ Check now', exact=True).click()

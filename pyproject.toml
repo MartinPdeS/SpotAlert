@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spotalert"
 version = "0.1.0"
-description = "Monitor studio-rental availability and alert you when a studio opens."
+description = "SpotAlert Chrome extension assets, optional profile helper, and legacy rental-monitoring CLI."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -51,9 +51,10 @@ Repository = "https://github.com/MartinPdeS/SpotAlert"
 
 [tool.setuptools.packages.find]
 include = ["SpotAlert*"]
+namespaces = false
 
 [tool.setuptools.package-data]
-SpotAlert = ["chrome_extension/*.json", "chrome_extension/*.js", "chrome_extension/*.html", "chrome_extension/*.css", "chrome_extension/icons/*", "chrome_extension/sounds/*"]
+SpotAlert = ["chrome_extension/*.json", "chrome_extension/*.js", "chrome_extension/sites/*.js", "chrome_extension/*.html", "chrome_extension/*.css", "chrome_extension/icons/*", "chrome_extension/sounds/*"]
 
 [tool.ruff]
 target-version = "py310"

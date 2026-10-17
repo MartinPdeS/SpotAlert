@@ -19,6 +19,7 @@ def main():
             worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profiles disabled in isolated tests');};}")
             panel = context.new_page()
             panel.goto(worker.url.replace('background.js', 'panel.html'))
+            panel.get_by_role("tab", name="Locations", exact=True).click()
             expect(panel.locator('#extension-version')).to_contain_text('SpotAlert')
             for stage, status, label in [('filling', 'running', 'Working'),
                                          ('needs-details', 'stopped', 'Needs your input'),
@@ -45,18 +46,18 @@ def main():
             for width in [360, 1280]:
                 panel.set_viewport_size({'width': width, 'height': 1000})
                 assert panel.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Application overflows'
-            panel.get_by_role('tab', name='Personal information', exact=True).click()
+            panel.get_by_role('tab', name='Profiles', exact=True).click()
             expect(panel.locator('#application-readiness')).to_have_count(1)
             expect(panel.locator('.client-overview #application-readiness')).to_be_visible()
             expect(panel.locator('.profile-preparation')).to_have_count(0)
             original_id = panel.locator('#saved-profile').input_value()
             original_name = panel.locator('#saved-profile option:checked').inner_text()
             panel.evaluate("()=>chrome.runtime.sendMessage({type:'create-profile'})")
-            expect(panel.locator('#client-overview-list .client-overview-row')).to_have_count(1)
-            expect(panel.locator('#client-overview-list strong')).to_have_text('New profile')
+            expect(panel.locator('#client-overview-list .profile-readiness')).to_have_count(1)
+            expect(panel.locator('#profile-name')).to_have_value('New profile')
             panel.locator('#saved-profile').select_option(original_id)
-            expect(panel.locator('#client-overview-list strong')).to_have_text(original_name)
-            expect(panel.locator('#client-overview-list .client-overview-row')).to_have_count(1)
+            expect(panel.locator('#profile-name')).to_have_value(original_name)
+            expect(panel.locator('#client-overview-list .profile-readiness')).to_have_count(1)
             expect(panel.locator('#client-overview-list')).not_to_contain_text('OurDomain')
             expect(panel.locator('#client-overview-list')).not_to_contain_text('Canvas')
             panel.evaluate('''async () => {
@@ -64,7 +65,7 @@ def main():
                 for(const m of s.monitors) { m.application=null; m.samples=[{id:'studio',name:'Studio',matched:true,index:1}]; }
                 await chrome.storage.local.set({[key]:s});
             }''')
-            panel.get_by_role('tab', name='Monitoring', exact=True).click()
+            panel.get_by_role('tab', name='Locations', exact=True).click()
             expect(panel.get_by_label('Applicant for this location')).to_have_count(0)
             panel.locator('.sample').get_by_role('button', name='Apply').click()
             expect(panel.locator('#confirm-apply')).to_be_disabled()
@@ -76,7 +77,7 @@ def main():
             expect(panel.locator('#apply-profile')).to_have_value('')
             expect(panel.locator('#confirm-apply')).to_be_disabled()
             panel.locator('#cancel-apply').click()
-            panel.get_by_role('tab', name='Personal information', exact=True).click()
+            panel.get_by_role('tab', name='Profiles', exact=True).click()
             expect(panel.locator('#fill-application')).to_have_count(0)
             expect(panel.locator('#application-action-feedback')).to_have_count(0)
             for width in [360, 1280]:

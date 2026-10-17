@@ -87,6 +87,7 @@ def main():
             worker.evaluate("async profile=>{const sam={...profile,firstName:'Sam',email:'sam@example.com'};const k='spotalert.monitors.v2';const s=(await chrome.storage.local.get(k))[k];s.monitors[0].profileId='default';await chrome.storage.local.set({[k]:s,'spotalert.application-profiles.v1':{activeId:'default',profiles:[{id:'default',name:'Alex',details:profile},{id:'sam',name:'Sam client',details:sam}]}});}", profile_data)
             panel = context.new_page()
             panel.goto(worker.url.replace('background.js','panel.html'))
+            panel.get_by_role("tab", name="Locations", exact=True).click()
             for site in sites:
                 panel.get_by_role('button', name=site['name'], exact=False).first.click()
                 with context.expect_page() as opened:
@@ -160,16 +161,8 @@ def main():
                     expect(panel.locator('.application-diagnostics').get_by_role('button', name='Open application', exact=True)).to_have_count(0)
 
 
-            worker.evaluate("async()=>{await chrome.storage.local.set({'spotalert.resend.v1':{enabled:true,apiKey:'re_fake'},'spotalert.notification-destinations.v1':{email:'alerts@example.com'}});globalThis.fetch=async()=>({ok:false,status:429,json:async()=>({})});chrome.notifications.create=async()=> 'mock';}")
-            panel.evaluate("async id=>chrome.runtime.sendMessage({type:'test-alert',id,sound:false})", sites[0]['id'])
-            if panel.locator('#availability-popup').is_visible():
-                panel.locator('#dismiss-availability').click()
-            panel.get_by_role('tab', name='Notifications', exact=True).click()
-            expect(panel.locator('.delivery-row').filter(has_text='Email')).to_contain_text('Failed')
-            worker.evaluate("()=>{globalThis.fetch=async()=>({ok:true,json:async()=>({id:'mock-sent'})});}")
-            panel.locator('.delivery-row').filter(has_text='Email').get_by_role('button', name='Retry', exact=True).click()
-            expect(panel.locator('.delivery-row').filter(has_text='Email')).to_contain_text('Sent')
-            expect(panel.locator('.delivery-row').filter(has_text='Email')).to_contain_text('2 attempts')
+            # Email delivery has its own Settings/search tests. Application tests
+            # must not depend on the retired Notifications tab or global alerts.
             artifacts = ROOT / 'artifacts/extension'
             artifacts.mkdir(parents=True, exist_ok=True)
             panel.screenshot(path=str(artifacts/'notification-delivery-history.png'), full_page=True)

@@ -1,7 +1,8 @@
 """Test booking recovery through the real worker with isolated synthetic pages."""
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from playwright.sync_api import sync_playwright, expect
+
+from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 URL = 'https://canvas-world.securerc.co.uk/onlineleasing/test/termsandotheritems.aspx?UnitID=1&FloorPlanID=2'
@@ -25,6 +26,7 @@ def main():
             worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Isolated test');};}")
             panel = context.new_page()
             panel.goto(worker.url.replace('background.js', 'panel.html'))
+            panel.get_by_role("tab", name="Locations", exact=True).click()
             scenarios = [
                 ('two lost clicks', "btnStart.onclick=()=>{record();if(Number(sessionStorage.getItem('clicks'))===3)advance();};", 3),
                 ('slow request', "btnStart.onclick=()=>{record();jQuery.active=1;setTimeout(()=>{jQuery.active=0;advance();},19000);};", 1),

@@ -1,11 +1,12 @@
-import {exclusionReasons, searchClaimKey, claimActionId} from "./searches.js";
+import {diagnosticReport, diagnosticText} from './diagnostics.js';
+import {createSearchView} from "./panel-searches.js";
+import {createDeliveryView} from "./panel-delivery.js";
 import {siteForUrl} from './sites/index.js';
-import {clientQuestionnaire, parseClientReply, CLIENT_FIELDS} from "./clients.js";
 import {APPLICATION_BUILD, applicationReport} from "./application-diagnostics.js";
 import {STORAGE_KEY, siteError, listingKey, safeListingUrl, sitePattern, validateMonitor} from "./core.js";
 
-import {UI_KEY, freshness, availabilityTotals} from "./ui.js";
-import {PROFILE_KEY, PROFILES_KEY, PROFILE_FIELDS, PROFILE_SECTIONS, profileCompleteness, temporaryRegistrationDetails} from "./profile.js";
+import {UI_KEY, freshness, availabilityTotals, cleanError, resultStatus, monitoringScope, errorRecovery} from "./ui.js";
+import {PROFILE_KEY, PROFILES_KEY, PROFILE_FIELDS, PROFILE_SECTIONS, profileCompleteness, requiredProfileFields, generateRegistrationPassword} from "./profile.js";
 
 const $ = (selector) => document.querySelector(selector);
 let value = {monitors: []};
@@ -16,6 +17,24 @@ let historyFilter = "all";
 let listingFilter = "all";
 let technicalOpen = false;
 let toastTimer;
+const pendingMonitorActions = new Set();
+const recentErrors = [];
+function rememberError(operation, error) {
+  recentErrors.push({at: Date.now(), operation, message: diagnosticText(error?.message || error)});
+  if (recentErrors.length > 20) recentErrors.shift();
+}
+function reportText() {
+  return JSON.stringify(diagnosticReport(value, recentErrors, {version: chrome.runtime.getManifest().version, browser: navigator.userAgent}), null, 2);
+}
+async function copyDiagnostics() {
+  try { await navigator.clipboard.writeText(reportText()); toast("Diagnostic report copied."); }
+  catch { downloadDiagnostics(); toast("Diagnostic report downloaded."); }
+}
+function downloadDiagnostics() {
+  const url = URL.createObjectURL(new Blob([reportText()], {type: "application/json"}));
+  element("a", {href: url, download: "spotalert-diagnostics.json"}).click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 let loadingState = false;
 let reloadState = false;
 let personalProfile = {};
@@ -45,17 +64,24 @@ const domain = (url) => { try { return new URL(url).hostname; } catch { return u
 const selected = () => value.monitors.find((monitor) => monitor.id === selectedId);
 
 async function request(message) {
-  const response = await chrome.runtime.sendMessage({...message, dashboardBuild: APPLICATION_BUILD});
-  if (!response?.ok) throw Object.assign(new Error(response?.error || "SpotAlert could not connect to its background worker. Reload the extension."), response?.details);
-  return response.result;
+  try {
+    const response = await chrome.runtime.sendMessage({...message, dashboardBuild: APPLICATION_BUILD});
+    if (!response?.ok) throw Object.assign(new Error(response?.error || "SpotAlert could not connect to its background worker. Reload the extension."), response?.details);
+    return response.result;
+  } catch (error) { rememberError(message.type, error); throw error; }
 }
 function toast(message, error = false) {
   clearTimeout(toastTimer);
   const node = $("#toast");
-  node.textContent = message;
+  node.replaceChildren(element("span", {}, message));
+  node.setAttribute("role", error ? "alert" : "status");
+  if (error) {
+    rememberError("dashboard", message);
+    node.append(element("button", {type: "button", class: "text-button", onclick: copyDiagnostics}, "Copy diagnostics"), element("button", {type: "button", class: "text-button", onclick: () => { node.hidden = true; }}, "Dismiss"));
+  }
   node.classList.toggle("error", error);
   node.hidden = false;
-  toastTimer = setTimeout(() => { node.hidden = true; }, error ? 9000 : 4500);
+  if (!error) toastTimer = setTimeout(() => { node.hidden = true; }, 4500);
 }
 const guard = (task) => async (event) => {
   try { await task(event); } catch (error) { toast(error.message, true); }
@@ -90,7 +116,11 @@ async function loadState() {
         const reveal = document.querySelector(".password-reveal");
         reveal.textContent = "Show"; reveal.setAttribute("aria-pressed", "false"); reveal.setAttribute("aria-label", "Show account password");
       }
-      if (!personalDirty) for (const field of PROFILE_FIELDS) $(`#personal-${field}`).value = personalProfile[field] || "";
+      if (!personalDirty) for (const field of PROFILE_FIELDS) {
+        const input = $(`#personal-${field}`);
+        if (field === "noMiddleName") input.checked = personalProfile[field] === "Yes";
+        else input.value = personalProfile[field] || "";
+      }
       compactView = Boolean(preferences[UI_KEY]?.compact);
       if (!contactsLoaded) {
         $("#client-reply-to").value = preferences[CONTACT_KEY]?.email || "";
@@ -134,37 +164,49 @@ function render() {
   $("#apartment-count-note").hidden = !totals.unknownCounts;
   $("#apartment-count").title = totals.unknownCounts ? "At least one apartment per available floor plan; some sites do not publish exact unit counts. Totals use the last successful results." : "Published unit counts from the last successful results.";
   $("#stop-all").disabled = !value.monitors.some(monitor => monitor.enabled || busy(monitor) || monitor.application?.status === "running");
+  $("#stop-all").hidden = $("#stop-all").disabled;
   $("#active-count").textContent = value.monitors.filter((monitor) => monitor.enabled).length;
   $("#available-count").textContent = totals.websites;
   $("#check-count").textContent = value.monitors.reduce((sum, monitor) => sum + monitor.checks, 0);
   $("#monitor-count").textContent = value.monitors.length;
+  const locationPicker = $("#location-picker");
+  const locationOptions = value.monitors.map(monitor => [monitor.id, monitor.name]);
+  if (JSON.stringify([...locationPicker.options].map(option => [option.value, option.textContent])) !== JSON.stringify(locationOptions)) {
+    locationPicker.replaceChildren(...locationOptions.map(([id, name]) => element("option", {value: id}, name)));
+  }
+  locationPicker.value = selectedId;
   $("#monitors").replaceChildren(...value.monitors.map((monitor) => element("button", {
     class: `monitor-card${monitor.enabled ? " watching" : ""}${monitor.id === selectedId ? " selected" : ""}`,
     "aria-pressed": String(monitor.id === selectedId),
-    onclick: () => { selectedId = monitor.id; showAllSamples = false; listingFilter = "all"; render(); },
+    onclick: () => selectLocation(monitor.id),
   },
   element("span", {class: "monitor-title"}, monitor.name),
-  element("span", {class: "monitor-bottom"}, element("span", {class: "pill"}, monitor.error ? "Check failed" : monitor.enabled ? "Watching" : "Paused"), `${monitor.samples.filter(sample => sample.matched).length} available`),
+  element("span", {class: "monitor-bottom"}, element("span", {class: "pill"}, monitor.error ? "Check failed" : monitoringScope(monitor, value.searches).general ? "General monitoring on" : monitor.enabled ? "Profile searches only" : "Off"), resultStatus(monitor).label),
   element("span", {class: "freshness", "data-freshness": monitor.id}),
-  monitor.error && element("span", {class: "monitor-error", title: siteError(monitor, monitor.error)}, siteError(monitor, monitor.error)),
+
   )));
   if (!value.monitors.length) $("#monitors").append(element("p", {class: "empty-note"}, "No supported websites are available."));
   renderDetail();
   updateFreshness();
 }
 function actionButton(label, type, monitor, className = "secondary-button") {
-  const button = element("button", {class: className, "data-action": type, onclick: guard(async () => {
-    button.disabled = true;
-    try { const result = await request({type, id: monitor.id}); if (type === "test-alert" && result.errors?.length) toast(result.errors.join(" "), true); await loadState(); }
-    finally { button.disabled = false; }
-  })}, label);
-  if (["check", "start"].includes(type) && busy(monitor)) button.disabled = true;
+  const key = `${monitor.id}:${type}`;
+  const button = element('button', {class: className, 'data-action': type, onclick: guard(async () => {
+    if (pendingMonitorActions.has(key)) return;
+    pendingMonitorActions.add(key);
+    button.disabled = true; button.setAttribute('aria-busy', 'true'); button.textContent = type === 'check' ? 'Checking…' : type === 'cancel-check' ? 'Cancelling…' : 'Updating…';
+    try { await request({type, id: monitor.id}); }
+    finally { pendingMonitorActions.delete(key); await loadState(); }
+  })}, pendingMonitorActions.has(key) ? 'Updating…' : label);
+  button.disabled = pendingMonitorActions.has(key) || (type === 'check' && busy(monitor));
+  button.setAttribute('aria-busy', String(pendingMonitorActions.has(key)));
   return button;
 }
 function renderDetail() {
   const monitor = selected();
   const root = $("#detail");
   const diagnosticsOpen = root.querySelector('.application-diagnostics')?.open;
+  const optionsOpen = root.querySelector('.monitor-options')?.open;
   const focusedAction = root.contains(document.activeElement) ? document.activeElement.dataset.action : null;
   root.replaceChildren();
   if (!monitor) {
@@ -173,8 +215,15 @@ function renderDetail() {
   }
   root.append(element("div", {class: "detail-head"},
     element("div", {class: "detail-title"}, element("h2", {}, monitor.name))));
-  root.append(element("button", {class: "text-button detail-url", title: "Open monitored tab", onclick: guard(() => request({type: "open", id: monitor.id}))}, `${monitor.url} ↗`));
-  const toolbar = element("div", {class: "control-row monitor-toolbar"}, actionButton(monitor.enabled ? "Ⅱ Pause monitoring" : "▶ Start watching", monitor.enabled ? "pause" : "start", monitor, "primary-button"), actionButton("↻ Check now", "check", monitor));
+  root.append(element("button", {class: "text-button detail-url", title: monitor.url, onclick: guard(() => request({type: "open", id: monitor.id}))}, "Open location website ↗"));
+  const scope = monitoringScope(monitor, value.searches);
+  const scopeRow = element('section', {class: 'monitor-scope', 'aria-label': 'Monitoring scope'},
+    element('div', {}, element('strong', {}, `General monitoring · ${scope.general ? 'On' : 'Off'}`), element('p', {class: 'helper'}, scope.searches.length ? `${scope.searches.length} active profile ${scope.searches.length === 1 ? 'search shares' : 'searches share'} this location. Stopping general monitoring leaves them running.` : 'No active profile searches use this location.')),
+    actionButton(scope.general ? 'Stop general monitoring' : 'Start general monitoring', scope.general ? 'pause' : 'start', monitor, scope.general ? 'danger-button' : 'secondary-button'));
+  if (scope.searches.length) scopeRow.append(element('button', {class: 'text-button', onclick: () => switchTab('searches')}, 'Manage profile searches →'));
+  root.append(scopeRow);
+  const toolbar = element('div', {class: 'control-row monitor-toolbar'}, actionButton(busy(monitor) ? 'Checking…' : '↻ Check now', 'check', monitor, 'primary-button'));
+  if (busy(monitor)) toolbar.append(actionButton('Cancel check', 'cancel-check', monitor));
   const refresh = element("select", {id: "refresh-interval", "aria-label": "Refresh interval"});
   const presets = [[5, "5 seconds"], [30, "30 seconds"], [60, "1 minute"], [300, "5 minutes"], [600, "10 minutes"], [1800, "30 minutes"], [3600, "1 hour"]];
   if (!presets.some(([seconds]) => seconds === monitor.intervalSeconds)) presets.push([monitor.intervalSeconds, `${monitor.intervalSeconds} seconds`]);
@@ -187,10 +236,15 @@ function renderDetail() {
       await loadState();
     } finally { refresh.disabled = false; }
   }));
-  toolbar.append(element("label", {class: "refresh-control"}, "Refresh every", refresh), element("button", {id: "configure-monitor", class: "small-button", onclick: () => openEditor(monitor)}, "Configure monitor"));
+  const options = element("details", {class: "monitor-options"}, element("summary", {}, "Options"));
+  options.open = Boolean(optionsOpen);
+  options.append(element("div", {class: "monitor-options-content"}, element("label", {class: "refresh-control"}, "Refresh every", refresh), element("button", {id: "configure-monitor", class: "small-button", onclick: () => { options.open = false; openEditor(monitor); }}, "Configure monitor")));
+  options.addEventListener("keydown", event => { if (event.key === "Escape") { options.open = false; options.querySelector("summary").focus(); } });
+  toolbar.append(options);
   root.append(toolbar);
   if (monitor.application?.message) {
     const app = monitor.application;
+    if (app.status === 'running') root.append(element('div', {class: 'application-progress', role: 'status'}, element('span', {}, `Application in progress · ${app.stage || 'Preparing'}…`), actionButton('Cancel application', 'stop-application', monitor)));
 
     const details = element("details", {class: "application-diagnostics", "data-application-build": APPLICATION_BUILD}, element("summary", {}, "Application diagnostics"));
     details.open = !!diagnosticsOpen;
@@ -217,9 +271,13 @@ function renderDetail() {
     attention.append(element("h3", {class: "attention-title"}, "Needs attention"));
     if (monitor.error) {
       const titles = {verification: "Complete website verification", login: "Sign in to the website", loading: "Website did not finish loading", selector: "Update the availability rule", permission: "Allow website access", navigation: "Return to the monitored page"};
-      const row = element("div", {class: "attention-monitor", role: "alert"}, element("h4", {}, titles[monitor.errorKind] || "Monitoring check failed"), element("p", {}, monitor.error));
+      const row = element("div", {class: "attention-monitor", role: "alert"}, element("h4", {}, titles[monitor.errorKind] || "Monitoring check failed"), element("p", {}, cleanError(monitor.name, monitor.url, monitor.error)));
       const actions = element("div", {class: "control-row"}, actionButton("Open affected tab ↗", "open-affected", monitor));
       if (["permission", "selector"].includes(monitor.errorKind)) actions.append(element("button", {class: "secondary-button", onclick: () => openEditor(monitor)}, monitor.errorKind === "permission" ? "Review website access" : "Edit rule"));
+      actions.append(element("button", {type: "button", class: "text-button", onclick: copyDiagnostics}, "Copy diagnostics"));
+      row.append(element("p", {class: "helper"}, `Last successful check: ${monitor.lastCheckedAt ? new Date(monitor.lastCheckedAt).toLocaleString() : "None yet"} · Consecutive failures: ${monitor.consecutiveErrors || 0}`));
+      row.append(element('p', {class: 'helper'}, 'Availability could not be confirmed. Previous successful results are retained.'), element('p', {class: 'helper'}, errorRecovery(monitor.errorKind)));
+      actions.prepend(actionButton('Retry check', 'check', monitor));
       row.append(actions);
       attention.append(row);
     }
@@ -237,7 +295,7 @@ function renderDetail() {
         $("#personal-tab").click();
         document.querySelectorAll(".profile-group").forEach(group => { group.open = true; });
         $("#personal-view").scrollIntoView({behavior: "smooth"});
-      }}, "Edit personal information"));
+      }}, "Edit profile"));
     }
     if (card && app.structure) {
       const details = element("details", {class: "application-structure"}, element("summary", {}, `Unfamiliar form · ${app.structure.fields.length} fields`));
@@ -258,6 +316,7 @@ function renderDetail() {
   const floors = monitor.filters?.floorplans?.length || 0;
   root.append(element("p", {class: "watch-summary"}, filterText || "All apartment types", floors ? ` · ${floors} selected floor ${floors === 1 ? "plan" : "plans"}` : "",
     monitor.hours?.enabled ? ` · ${monitor.hours.start}–${monitor.hours.end} (${monitor.hours.timeZone})` : ""));
+  if (!filterText && !floors && !monitor.hours?.enabled) root.querySelector(".watch-summary").remove();
   let caption = "Monitoring paused";
   let symbol = "Ⅱ";
   let sub = "";
@@ -265,12 +324,15 @@ function renderDetail() {
   else if (monitor.error) { caption = {verification: "Verification required", login: "Sign in required", loading: "Page still loading", selector: "Rule needs updating", permission: "Website access required", navigation: "Tab navigated away"}[monitor.errorKind] || "The last check failed"; symbol = "!"; sub = monitor.enabled ? `Retry scheduled after ${monitor.consecutiveErrors || 1} failed ${monitor.consecutiveErrors === 1 ? "check" : "checks"}.` : "Fix the rule or page access, then try again."; }
   else if (monitor.phase === "waiting-hours" && monitor.enabled) { caption = "Waiting for monitoring hours"; symbol = "◷"; }
   else if (monitor.enabled) { caption = "Watching for availability"; symbol = "✓"; sub = ""; }
-  if (!monitor.error || busy(monitor)) root.append(element("div", {class: "activity-line", role: "status"}, element("span", {class: `activity-symbol${busy(monitor) ? " spinning" : ""}`, "aria-hidden": "true"}, symbol), element("div", {}, element("div", {class: "activity-caption"}, caption), sub && element("div", {class: "activity-sub"}, sub))));
-  root.append(element("div", {class: "telemetry"},
-    element("div", {}, element("span", {}, "Last successful check"), element("strong", {}, clock(monitor.lastCheckedAt)), element("span", {class: "freshness", "data-freshness": monitor.id})),
-    element("div", {}, element("span", {}, "Next refresh"), element("strong", {"data-next": monitor.id}, nextLabel(monitor))),
-    element("div", {}, element("span", {}, "Check duration"), element("strong", {}, monitor.lastDurationMs === null ? "—" : `${(monitor.lastDurationMs / 1000).toFixed(1)}s`)),
-  ));
+  const statusRow = element("div", {class: "monitor-status telemetry", role: "status"});
+  root.setAttribute("aria-busy", String(busy(monitor)));
+  if (busy(monitor) || (monitor.phase === "waiting-hours" && monitor.enabled)) statusRow.append(element("span", {class: `activity-caption${busy(monitor) ? " spinning" : ""}`}, caption));
+  if (monitor.lastCheckedAt) statusRow.append(element("span", {class: "freshness", "data-freshness": monitor.id}));
+  if (monitor.enabled) statusRow.append(element("span", {}, "Next check ", element("span", {"data-next": monitor.id}, nextLabel(monitor))));
+  const resultsState = resultStatus(monitor);
+  if (!busy(monitor)) statusRow.append(element('strong', {class: `result-status ${resultsState.kind}`}, resultsState.label));
+  if (resultsState.historical && monitor.samples.length) statusRow.append(element('span', {class: 'helper'}, 'Showing previous results; availability is unconfirmed.'));
+  root.append(statusRow);
   const technical = element("details", {class: "technical-details"}, element("summary", {}, "Technical details & activity"));
   technical.open = technicalOpen;
   technical.addEventListener("toggle", () => { technicalOpen = technical.open; });
@@ -294,13 +356,17 @@ function renderDetail() {
   if (!monitor.samples.length) sampleSection.append(element("p", {class: "empty-note"}, "Check this website to load its floor plans."));
   else if (!visibleSamples.length) sampleSection.append(element("p", {class: "empty-note"}, "No floor plans match this view."));
   else sampleSection.append(element("div", {class: "sample-grid"}, ...visibleSamples.slice(0, showAllSamples ? 100 : 8).map((sample) => {
-    const details = [["Rent", sample.rent], ["Bedrooms", {studio: "Studio", "1-bedroom": "1", "2-bedroom": "2", "3-plus": sample.beds || "3+"}[sample.apartmentType] || sample.beds], ["Size", sample.size], ["Bathrooms", sample.baths]].filter(([, value]) => value);
+    const details = [["Bedrooms", {studio: "Studio", "1-bedroom": "1", "2-bedroom": "2", "3-plus": sample.beds || "3+"}[sample.apartmentType] || sample.beds], ["Size", sample.size], ["Bathrooms", sample.baths]].filter(([, value]) => value);
     return element("article", {class: `sample${sample.matched ? " matched" : ""}`},
-      element("div", {class: "sample-top"}, element("h4", {class: "sample-name"}, sample.name || "Floor plan description unavailable"), element("span", {class: `pill${sample.matched ? " available" : ""}`}, sample.included === false ? "Filtered out" : sample.matched ? "Available" : "Not available")),
+      element("div", {class: "sample-top"}, element("h4", {class: "sample-name"}, sample.name || "Floor plan description unavailable"), element("span", {class: `pill${sample.matched ? " available" : ""}`}, sample.included === false ? "Filtered out" : sample.matched ? resultStatus(monitor).historical ? "Previously available" : "Available" : resultStatus(monitor).historical ? "Previous result" : "Not available")),
+      element("p", {class: "listing-rent"}, sample.rent || "Rent not published"),
+      element("p", {class: "listing-location"}, monitor.name),
       element("p", {class: "sample-type"}, {studio: "Studio", "1-bedroom": "1 bedroom", "2-bedroom": "2 bedrooms", "3-plus": "3+ bedrooms"}[sample.apartmentType] || ""),
       details.length ? element("dl", {class: "listing-details"}, ...details.map(([label, value]) => element("div", {}, element("dt", {}, label), element("dd", {}, value)))) : element("p", {class: "sample-context"}, "Check again to load apartment details."),
       Boolean(sample.preferenceReasons?.length) && element("p", {class: "sample-context"}, sample.preferenceReasons.join(" · ")),
-      sample.matched && listingButton(monitor, sample));
+      element("div", {class: "listing-actions"},
+        element("a", {class: "secondary-button", href: safeListingUrl(sample.pageUrl || sample.applicationUrl, monitor.url) || monitor.url, target: "_blank", rel: "noopener noreferrer"}, "View apartment ↗"),
+        sample.matched && listingButton(monitor, sample)));
   })));
   root.append(sampleSection);
   const filter = element("select", {"aria-label": "Filter activity", style: "width:auto;margin:0;padding:4px 7px;font-size:10px"}, element("option", {value: "all"}, "All events"), element("option", {value: "changes"}, "Changes & errors"));
@@ -413,9 +479,9 @@ $("#export").addEventListener("click", () => {
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-$(".brand").addEventListener("click", (event) => { event.preventDefault(); window.scrollTo({top: 0, behavior: "smooth"}); });
+$(".brand").addEventListener("click", (event) => { event.preventDefault(); switchTab("searches"); window.scrollTo({top: 0, behavior: "instant"}); });
 function listingButton(monitor, sample) {
-  const button = element("button", {class: "text-button listing-link", onclick: guard(async () => {
+  const button = element("button", {class: "primary-button listing-link", onclick: guard(async () => {
     showApplyConfirmation(monitor, sample);
   })}, "Apply ↗");
   button.disabled = monitor.application?.status === "running";
@@ -438,17 +504,22 @@ const orderedSections = [...PROFILE_SECTIONS].sort((a, b) => {
   const order = ["Identity & contact", "Moving preferences", "Account password"];
   return (order.indexOf(a.title) < 0 ? 99 : order.indexOf(a.title)) - (order.indexOf(b.title) < 0 ? 99 : order.indexOf(b.title));
 });
-for (const [sectionIndex, section] of orderedSections.entries()) {
+for (const section of orderedSections) {
   const details = element("details", {class: "profile-group"});
   details.open = section.title === "Identity & contact";
   details.dataset.fields = section.fields.map(([key]) => key).join(",");
-  details.append(element("summary", {}, element("span", {class: "profile-section-number"}, String(sectionIndex + 1).padStart(2, "0")), element("span", {class: "profile-section-title"}, section.title), element("span", {class: "profile-section-count"})));
+  details.append(element("summary", {}, element("span", {class: "profile-section-title"}, section.title), element("span", {class: "profile-section-count"})));
   if (section.helper) details.append(element("p", {class: "helper"}, section.helper));
   const grid = element("div", {class: "profile-fields"});
-  for (const [key, label, type] of section.fields) {
-    const wrapper = element("label", {}, label);
-    const input = Array.isArray(type) ? element("select", {id: `personal-${key}`}) : element("input", {id: `personal-${key}`, type: type || "text", maxlength: "200"});
-    if (Array.isArray(type)) for (const choice of ["", ...type]) input.append(element("option", {value: choice}, choice || "Choose…"));
+  const identityOrder = ["firstName", "lastName", "middleName", "noMiddleName", "dateOfBirth", "email", "phone", "nationality", "countryOfResidence", "title", "preferredName", "contactMethod"];
+  const fields = section.title === "Identity & contact" ? [...section.fields].sort(([a], [b]) => identityOrder.indexOf(a) - identityOrder.indexOf(b)) : section.fields;
+  for (const [key, label, type] of fields) {
+    const wrapper = element("label", {"data-profile-field": key}, element("span", {class: "field-label"}, label, element("small", {class: "field-requirement"})));
+    const checkbox = key === "noMiddleName";
+    const input = checkbox ? element("input", {id: `personal-${key}`, type: "checkbox"}) : Array.isArray(type) ? element("select", {id: `personal-${key}`}) : element("input", {id: `personal-${key}`, type: type || "text", maxlength: "200"});
+    if (Array.isArray(type) && !checkbox) for (const choice of ["", ...type]) input.append(element("option", {value: choice}, choice || "Choose…"));
+    input.setAttribute("aria-describedby", "profile-field-note");
+    if (checkbox) wrapper.classList.add("checkbox-label", "profile-checkbox");
     if (type === "number") { input.min = "0"; input.step = "0.01"; }
     if (type === "password") {
       const reveal = element("button", {type: "button", class: "password-reveal", "aria-label": "Show account password", "aria-pressed": "false", onclick: () => {
@@ -462,22 +533,47 @@ for (const [sectionIndex, section] of orderedSections.entries()) {
     } else wrapper.append(input);
     grid.append(wrapper);
   }
+  if (section.title === "Identity & contact") {
+    const middle = grid.querySelector('[data-profile-field="middleName"]');
+    const checkbox = grid.querySelector('[data-profile-field="noMiddleName"]');
+    const group = element("div", {class: "middle-name-field"});
+    middle.replaceWith(group);
+    group.append(element("span", {class: "middle-name-heading"}, "Middle name"), middle, checkbox);
+  }
   details.append(grid);
   $("#profile-sections").append(details);
 }
+const viewContext = {$, element, guard, request, loadState, switchTab, toast, openProfile, openLocation: id => { selectLocation(id); switchTab("monitoring"); }, showApplyConfirmation, getState: () => value, getLibrary: () => applicantLibrary, isPersonalDirty: () => personalDirty};
+const {renderSearches} = createSearchView(viewContext);
+const {renderSettings} = createDeliveryView(viewContext);
 loadState().catch((error) => toast(error.message, true));
 
 function updateProfilePresentation() {
   const name = $("#profile-name").value.trim();
   $("#profile-avatar").textContent = name.split(/\s+/).map(word => word[0]).slice(0, 2).join("").toUpperCase() || "＋";
+  const draft = readProfile();
+  const required = new Set(requiredProfileFields(draft));
   for (const group of document.querySelectorAll(".profile-group")) {
-    const keys = group.dataset.fields.split(",");
-    const count = keys.filter(key => $(`#personal-${key}`).value.trim()).length;
-    group.querySelector(".profile-section-count").textContent = `${count}/${keys.length}`;
+    const requiredKeys = group.dataset.fields.split(",").filter(key => required.has(key));
+    const missing = requiredKeys.filter(key => !readProfileField(key).trim()).length;
+    const marker = group.querySelector(".profile-section-count");
+    marker.textContent = missing ? `${missing} missing` : requiredKeys.length ? "" : "Optional";
+    marker.hidden = !marker.textContent;
   }
+  for (const wrapper of document.querySelectorAll("[data-profile-field]")) {
+    const key = wrapper.dataset.profileField;
+    wrapper.querySelector(".field-requirement").textContent = required.has(key) ? "*" : "";
+    wrapper.querySelector(".field-requirement").setAttribute("aria-label", required.has(key) ? "Required" : "");
+    wrapper.querySelector(".field-requirement").classList.toggle("is-required", required.has(key));
+    wrapper.hidden = key === "middleName" && draft.noMiddleName === "Yes" || ["Retired", "Never employed"].includes(draft.employmentStatus) && ["jobTitle", "employer", "employedSince", "employerCountry", "employerAddress", "employerAddressLine2", "employerPostalCode", "employerCity", "employerPhone"].includes(key);
+  }
+  const active = applicantLibrary.profiles.find(entry => entry.id === applicantLibrary.activeId);
+  $("#test-profile-badge").hidden = !active?.testProfile;
+  renderClientOverview();
   $("#profile-save-status").textContent = personalDirty ? "Unsaved changes" : "All changes saved";
   $("#profile-save-status").classList.toggle("unsaved", personalDirty);
 }
+$("#profile-name").addEventListener("invalid", () => { $("#profile-rename").open = true; });
 $("#saved-profile").addEventListener("change", guard(async () => {
   if (personalDirty) {
     $("#saved-profile").value = $("#saved-profile").dataset.activeId;
@@ -486,17 +582,18 @@ $("#saved-profile").addEventListener("change", guard(async () => {
   }
   await request({type: "select-profile", id: $("#saved-profile").value});
   await loadState();
-  toast("Profile loaded. Apply will use these details.");
+  $("#profile-rename").open = false;
 }));
 $("#new-profile").addEventListener("click", guard(async () => {
   if (personalDirty) { toast("Save your changes before creating a profile.", true); return; }
   await request({type: "create-profile"});
   await loadState();
+  $("#profile-rename").open = true;
   $("#profile-name").focus(); $("#profile-name").select();
 }));
-$("#personal-form").addEventListener("input", event => { if (!["saved-profile", "signature-consent"].includes(event.target.id)) personalDirty = true; updateProfilePresentation(); });
+$("#personal-form").addEventListener("input", event => { if (event.target.id === "personal-noMiddleName" && event.target.checked) $("#personal-middleName").value = ""; if (!["saved-profile", "signature-consent"].includes(event.target.id)) personalDirty = true; updateProfilePresentation(); });
 $("#generate-registration-details").addEventListener("click", () => {
-  const details = temporaryRegistrationDetails();
+  const details = {registrationPassword: generateRegistrationPassword()};
   for (const [key, value] of Object.entries(details)) {
     const input = $(`#personal-${key}`);
     input.value = value;
@@ -504,17 +601,23 @@ $("#generate-registration-details").addEventListener("click", () => {
   }
   personalDirty = true;
   updateProfilePresentation();
-  toast("Temporary details generated. Save personal information to use them.");
+  toast("Password generated. Save personal information to use it.");
 });
+$("#create-test-profiles").addEventListener("click", guard(async () => {
+  if (personalDirty) throw new Error("Save your profile changes before creating test profiles.");
+  await request({type: "create-test-profiles", regenerate: true});
+  await loadState();
+  toast("Two realistic fictional profiles generated. Select either profile to review its details.");
+}));
 $("#personal-form").addEventListener("submit", async event => {
   event.preventDefault();
   try {
-    const profile = Object.fromEntries(PROFILE_FIELDS.map(field => [field, $(`#personal-${field}`).value]));
+    const profile = readProfile();
     await request({type: "save-profile", profile, name: $("#profile-name").value});
     personalDirty = false;
     $("#personal-error").hidden = true;
     await loadState();
-    toast("Personal information saved.");
+    toast("Profile saved.");
   } catch (error) {
     $("#personal-error").textContent = error.message;
     $("#personal-error").hidden = false;
@@ -596,8 +699,9 @@ $("#export-debug").addEventListener("click", () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
 
-const workspaceTabs = ["searches", "monitoring", "settings", "personal", "clients"];
+const workspaceTabs = ["searches", "monitoring", "personal", "clients", "settings"];
 function switchTab(name) {
+  const changed = $(`#${name}-tab`).getAttribute("aria-selected") !== "true";
   workspaceVisited = true;
   for (const tab of workspaceTabs) {
     const active = tab === name;
@@ -605,6 +709,7 @@ function switchTab(name) {
     $(`#${tab}-tab`).tabIndex = active ? 0 : -1;
     $(`#${tab}-view`).hidden = !active;
   }
+  if (changed) window.scrollTo({top: 0, behavior: "instant"});
 }
 for (const name of workspaceTabs) {
   $(`#${name}-tab`).addEventListener("click", () => switchTab(name));
@@ -617,75 +722,6 @@ for (const name of workspaceTabs) {
     }
   });
 }
-function renderSettings() {
-  const picker = $('#email-test-profile');
-  const previous = picker.value;
-  const profiles = applicantLibrary.profiles;
-  const options = profiles.map(profile => [profile.id, `${profile.name} · ${profile.details.email || 'No email saved'}`]);
-  if (JSON.stringify([...picker.options].map(option => [option.value, option.textContent])) !== JSON.stringify([['', 'Select a profile'], ...options])) {
-    picker.replaceChildren(element('option', {value: ''}, 'Select a profile'), ...options.map(([id, name]) => element('option', {value: id}, name)));
-    picker.value = profiles.some(profile => profile.id === previous) ? previous : '';
-  }
-}
-async function saveEmailSettings() {
-  const sender = $('#email-sender').value.trim();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sender)) throw new Error('Enter a valid sender email.');
-  await chrome.storage.local.set({[EMAIL_KEY]: {apiKey: $('#email-api-key').value.trim(), sender}});
-  $('#email-save-status').textContent = 'Settings saved';
-}
-$('#email-delivery-form').addEventListener('submit', guard(async event => {
-  event.preventDefault();
-  await saveEmailSettings();
-  toast('Email delivery settings saved.');
-}));
-$('#test-email').addEventListener('click', guard(async () => {
-  const button = $('#test-email');
-  button.disabled = true;
-  try {
-    if (!$('#email-test-profile').value) throw new Error('Select a recipient profile for the test.');
-    await saveEmailSettings();
-    await request({type: 'test-email', profileId: $('#email-test-profile').value});
-    toast('Test email accepted by the provider.');
-  } finally { button.disabled = false; }
-}));
-for (const id of ['email-api-key', 'email-sender']) $(`#${id}`).addEventListener('input', () => { $('#email-save-status').textContent = 'Unsaved changes'; });
-
-function updateQuestionnaire() { $("#client-questionnaire").textContent = clientQuestionnaire($("#client-name").value); }
-$("#client-name").addEventListener("input", updateQuestionnaire);
-updateQuestionnaire();
-$("#copy-client-questionnaire").addEventListener("click", guard(async () => {
-  await navigator.clipboard.writeText(clientQuestionnaire($("#client-name").value)); toast("Questionnaire copied.");
-}));
-$("#send-client-questionnaire").addEventListener("click", guard(async () => {
-  const button = $("#send-client-questionnaire"); button.disabled = true;
-  try {
-    await request({type: "send-client-questionnaire", name: $("#client-name").value, to: $("#client-email").value, replyTo: $("#client-reply-to").value});
-    $("#client-send-status").textContent = "Email sent. Paste their reply here when it arrives.";
-  } finally { button.disabled = false; }
-}));
-let reviewedClientReply = null;
-$("#client-reply").addEventListener("input", () => { reviewedClientReply = null; $("#import-client-profile").hidden = true; $("#client-import-preview").hidden = true; });
-$("#review-client-reply").addEventListener("click", guard(() => {
-  reviewedClientReply = null; $("#import-client-profile").hidden = true;
-  const profile = parseClientReply($("#client-reply").value);
-  const preview = $("#client-import-preview");
-  const list = element("dl", {class: "client-answer-list"});
-  for (const [key, label] of CLIENT_FIELDS) if (profile[key]) list.append(element("dt", {}, label), element("dd", {}, key === "registrationPassword" ? "Password provided · hidden" : profile[key]));
-  preview.replaceChildren(element("h4", {}, "Review extracted answers"), list); preview.hidden = false;
-  reviewedClientReply = $("#client-reply").value; $("#import-client-profile").hidden = false;
-}));
-$("#import-client-profile").addEventListener("click", guard(async () => {
-  if (personalDirty) throw new Error("Save your edits in Personal information before importing a profile.");
-  if (!reviewedClientReply || reviewedClientReply !== $("#client-reply").value) throw new Error("Review the answers first.");
-  const button = $("#import-client-profile"); button.disabled = true;
-  try {
-    await request({type: "import-client-profile", name: $("#client-profile-name").value, reply: reviewedClientReply});
-    reviewedClientReply = null; button.hidden = true;
-    $("#client-import-status").textContent = "Profile created and selected.";
-    await loadState(); switchTab("personal"); toast("Client profile created. Review the details before applying.");
-  } finally { button.disabled = false; }
-}));
-
 $("#enable-profile-folder").addEventListener("click", guard(async () => {
   if (personalDirty) throw new Error("Save your profile changes first.");
   await request({type: "enable-profile-folder"}); await loadState(); toast("Profiles saved to the local SpotAlert folder.");
@@ -717,9 +753,10 @@ function updateApplyConfirmation() {
     return;
   }
   if (personalDirty && applicant.id === applicantLibrary.activeId) {
-    $("#apply-confirmation-note").textContent = "Save this profile’s changes in Personal information before applying.";
+    $("#apply-confirmation-note").textContent = "Save this profile’s changes in Profiles before applying.";
     return;
   }
+  if (applicant.testProfile) list.append(element("dt", {}, "Profile type"), element("dd", {class: "test-profile-badge"}, "Test profile · fictional details"));
   const preferred = applicant.details.moveInFrom;
   let dateLabel = "First allowed weekday";
   if (preferred) {
@@ -746,293 +783,70 @@ $("#confirm-apply").addEventListener("click", guard(async () => {
   const result = await request({type: "open-listing", ...command});
   if (result.moveInMessage) toast(result.moveInMessage);
 }));
+function readProfileField(key) {
+  const input = $(`#personal-${key}`);
+  return key === "noMiddleName" ? input.checked ? "Yes" : "No" : input.value;
+}
+function readProfile() {
+  return Object.fromEntries(PROFILE_FIELDS.map(key => [key, readProfileField(key)]));
+}
+function focusProfileField(key) {
+  const input = $(`#personal-${key}`);
+  if (!input) return;
+  const group = input.closest("details");
+  if (group) group.open = true;
+  input.scrollIntoView({block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth"});
+  input.focus({preventScroll: true});
+}
+async function openProfile(id, key = null) {
+  if (personalDirty && id !== applicantLibrary.activeId) throw new Error("Save your profile changes before loading another profile.");
+  if (id !== applicantLibrary.activeId) {
+    await request({type: "select-profile", id});
+    await loadState();
+  }
+  switchTab("personal");
+  if (key) focusProfileField(key);
+}
+function selectLocation(id) {
+  selectedId = id; showAllSamples = false; listingFilter = "all"; render();
+}
+const narrowWorkspace = matchMedia("(max-width: 719px)");
+function adaptLocationOverview() { $("#location-overview").open = false; }
+narrowWorkspace.addEventListener("change", adaptLocationOverview);
+adaptLocationOverview();
+$("#location-picker").addEventListener("change", event => selectLocation(event.target.value));
 function renderClientOverview() {
-  const list = $("#client-overview-list"); list.replaceChildren();
-  for (const entry of applicantLibrary.profiles.filter(profile => profile.id === applicantLibrary.activeId)) {
-    const readiness = profileCompleteness(entry.details);
-    const hasDetails = Object.values(entry.details).some(Boolean);
-    const status = readiness.ready ? "Ready to apply" : hasDetails ? "Missing details" : "Awaiting information";
-    const card = element("div", {class: "client-overview-row"}, element("div", {}, element("strong", {}, entry.name)), element("span", {id: "application-readiness", class: `pill${readiness.ready ? " available" : ""}`, role: "status"}, status));
-    const details = element("details", {}, element("summary", {}, `${readiness.complete}/${readiness.total} required details`), element("p", {class: "helper"}, readiness.ready ? "Website requirements may vary." : `Still needed: ${readiness.missing.join(", ")}`));
-    card.append(details, element("button", {type: "button", class: "secondary-button", onclick: () => {
-      const group = document.querySelector(".profile-group");
-      if (group) { group.open = true; group.scrollIntoView({behavior: "smooth", block: "start"}); }
-    }}, "Edit profile"));
-    list.append(card);
+  const list = $("#client-overview-list");
+  const expanded = list.querySelector("details")?.open || false;
+  const focusedKey = list.contains(document.activeElement) ? document.activeElement.dataset.field : null;
+  const draft = readProfile();
+  const readiness = profileCompleteness(draft);
+  const status = readiness.ready ? "Ready to apply" : Object.values(draft).some(value => value && value !== "No") ? "Missing details" : "Awaiting information";
+  const card = element("div", {class: "profile-readiness"});
+  if (readiness.ready) {
+    card.append(element("span", {id: "application-readiness", role: "status"}, "Ready to apply"));
+    list.replaceChildren(card);
+    return;
   }
+  const details = element("details", {class: "missing-profile-fields"}, element("summary", {}, element("span", {id: "application-readiness", role: "status"}, status), !readiness.ready && ` · ${readiness.missingFields.length}`));
+  details.open = expanded;
+  if (!readiness.missingFields.length) details.append(element("p", {class: "helper"}, "Website requirements may vary."));
+  else details.append(element("div", {class: "missing-field-links"}, ...readiness.missingFields.map(({key, label}) => element("button", {type: "button", class: "text-button", "data-field": key, onclick: () => focusProfileField(key)}, `${label} →`))));
+  card.append(details);
+  list.replaceChildren(card);
+  if (focusedKey) list.querySelector(`[data-field="${focusedKey}"]`)?.focus({preventScroll: true});
 }
-function renderSearches() {
-  const root = $("#search-list");
-  const searches = value.searches || [];
-  const matchEntries = search => Object.entries(search.results || {}).flatMap(([id, result]) => result.matches.filter(item => item.matched).map(listing => ({id, listing})));
-  const needsAttention = search => search.error || search.activity?.some(item => ['review', 'failed', 'interrupted'].includes(item.status)) || search.enabled && search.locationIds.some(id => value.monitors.find(monitor => monitor.id === id)?.error);
-  $('#search-active-total').textContent = searches.filter(search => search.enabled).length;
-  $('#search-match-total').textContent = searches.reduce((total, search) => total + matchEntries(search).length, 0);
-  $('#search-review-total').textContent = searches.filter(needsAttention).length;
-  $('#search-total').textContent = searches.length;
-  const filter = $('#search-profile-filter');
-  const selectedProfile = filter.value;
-  const profiles = applicantLibrary?.profiles || [];
-  if (JSON.stringify([...filter.options].map(option => [option.value, option.textContent])) !== JSON.stringify([['', 'All profiles'], ...profiles.map(profile => [profile.id, profile.name])])) {
-    filter.replaceChildren(element('option', {value: ''}, 'All profiles'), ...profiles.map(profile => element('option', {value: profile.id}, profile.name)));
-    filter.value = profiles.some(profile => profile.id === selectedProfile) ? selectedProfile : '';
-  }
-  filter.disabled = !searches.length;
-  const expanded = new Map([...root.querySelectorAll('.search-card')].map(card => [card.dataset.searchId, Object.fromEntries([...card.querySelectorAll('details[data-disclosure]')].map(item => [item.dataset.disclosure, item.open]))]));
-  const focusedCard = document.activeElement?.closest('.search-card')?.dataset.searchId;
-  const focusedLabel = root.contains(document.activeElement) ? document.activeElement.textContent : null;
-  root.replaceChildren();
-  for (const search of searches.filter(search => !filter.value || search.profileId === filter.value)) {
-    const profile = profiles.find(item => item.id === search.profileId);
-    const criteria = profile?.details || {};
-    const matches = matchEntries(search);
-    const errors = search.locationIds.map(id => value.monitors.find(item => item.id === id)).filter(monitor => monitor?.error);
-    const button = (label, task, className = 'secondary-button') => element('button', {class: className, onclick: guard(async event => {
-      event.currentTarget.disabled = true;
-      try { await task(); } finally { await loadState(); }
-    })}, label);
-    const initials = (profile?.name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase();
-    const card = element('article', {class: `search-card${search.enabled ? ' is-active' : ''}`, 'data-search-id': search.id, 'aria-labelledby': `search-title-${search.id}`},
-      element('div', {class: 'search-card-heading'}, element('div', {class: 'search-identity'}, element('span', {class: 'search-avatar', 'aria-hidden': 'true'}, initials), element('div', {}, element('p', {class: 'search-owner'}, profile?.name || 'Deleted profile'), element('h3', {id: `search-title-${search.id}`}, search.name))), element('span', {class: `search-status${search.enabled ? ' active' : ''}${search.enabled && errors.length ? ' attention' : ''}`}, element('span', {'aria-hidden': 'true'}), search.enabled ? errors.length ? 'Check needed' : 'Searching' : 'Paused')),
-      element('div', {class: 'search-location-tags'}, ...search.locationIds.map(id => element('span', {}, value.monitors.find(item => item.id === id)?.name || id))),
-      element('dl', {class: 'search-criteria'}, ...[
-        ['Monthly budget', criteria.maxRent ? `Up to €${criteria.maxRent}` : 'Any budget'],
-        ['Minimum size', criteria.minSize ? `${criteria.minSize} m²` : 'Any size'],
-        ['Apartment', ({studio: 'Studio', '1-bedroom': '1 bedroom', '2-bedroom': '2 bedrooms', '3-plus': '3+ bedrooms'})[criteria.preferredApartmentType] || 'Any type'],
-        ['Move in', criteria.moveInFrom || 'First available date'],
-      ].map(([label, text]) => element('div', {}, element('dt', {}, label), element('dd', {}, text)))),
-      element('div', {class: 'search-channel-summary'}, element('span', {class: 'search-channel-label'}, 'On a match'), search.actions.autoApply && element('span', {class: 'search-channel'}, 'Auto-apply'), search.actions.email && element('span', {class: 'search-channel', title: profile?.details.email || 'Missing email'}, 'Email profile holder')));
-    if (search.actions.email) card.append(element('p', {class: 'search-recipient-caption'}, `Email: ${profile?.details.email || 'Missing email'}`));
-    const overview = element('div', {class: `search-match-summary${matches.length ? ' has-matches' : ''}`}, element('strong', {}, Object.keys(search.results || {}).length ? `${matches.length} matching ${matches.length === 1 ? 'floor plan' : 'floor plans'}` : 'Ready for the first check'), element('span', {}, search.error || (errors.length && search.enabled ? 'A location needs attention. See location status below.' : matches.length ? 'From the latest successful location checks.' : search.enabled ? 'Actions run when an apartment matches.' : 'Start this search to check for matching apartments.')));
-    card.append(overview);
-    if (matches.length) card.append(element('div', {class: 'search-match-previews'}, ...matches.slice(0, 2).map(({id, listing}) => {
-      const monitor = value.monitors.find(item => item.id === id);
-      const url = safeListingUrl(listing.applicationUrl || listing.pageUrl, monitor.url) || monitor.url;
-      return element('a', {class: 'search-listing-link', href: url, target: '_blank', rel: 'noopener noreferrer'}, element('span', {}, element('strong', {}, listing.name || listing.context || 'Apartment'), element('small', {}, [listing.rent, listing.size].filter(Boolean).join(' · ')), listingClaimBadges(search, id, listing)), element('span', {'aria-hidden': 'true'}, '↗'));
-    })));
-    if (search.error) card.append(element('p', {class: 'form-error'}, search.error));
-    const results = element('details', {class: 'search-results'}, element('summary', {}, matches.length ? `View ${matches.length} ${matches.length === 1 ? 'match' : 'matches'} & location status` : 'Location status'));
-    for (const id of search.locationIds) {
-      const monitor = value.monitors.find(item => item.id === id);
-      const result = search.results?.[id];
-      const listings = result?.matches.filter(item => item.matched) || [];
-      results.append(element('div', {class: 'search-location-status'}, element('strong', {}, monitor?.name || id), element('p', {class: 'helper'}, monitor?.error || (result ? `${listings.length} matches · Checked ${new Date(result.at).toLocaleString()}` : 'Waiting for the first successful check'))));
-      for (const listing of listings) {
-        const url = safeListingUrl(listing.applicationUrl || listing.pageUrl, monitor.url) || monitor.url;
-        results.append(element('a', {class: 'search-listing-link', href: url, target: '_blank', rel: 'noopener noreferrer'}, element('span', {}, element('strong', {}, listing.name || listing.context || 'Apartment'), element('small', {}, [listing.rent, listing.size].filter(Boolean).join(' · ')), listingClaimBadges(search, id, listing)), element('span', {'aria-hidden': 'true'}, '↗')));
-      }
-    }
-    const excluded = element('details', {class: 'search-exclusions'}, element('summary', {}, `Excluded & unavailable (${Object.values(search.results || {}).reduce((total, result) => total + result.matches.filter(item => !item.matched).length, 0)})`));
-    for (const [monitorId, result] of Object.entries(search.results || {})) for (const listing of result.matches.filter(item => !item.matched)) {
-      excluded.append(element('div', {class: 'search-excluded-item'}, element('strong', {}, listing.name || listing.context || 'Apartment'), element('small', {}, value.monitors.find(item => item.id === monitorId)?.name || monitorId), element('ul', {}, ...exclusionReasons(listing).map(reason => element('li', {}, reason)))));
-    }
-    if (!excluded.querySelector('.search-excluded-item')) excluded.append(element('p', {class: 'helper'}, 'After a successful check, apartments that do not match will appear here with the reason.'));
-    const records = searchClaimRecords(search);
-    const duplicates = element('details', {class: 'search-duplicates'}, element('summary', {}, `Previous actions & duplicate protection (${records.length})`));
-    duplicates.append(element('p', {class: 'helper'}, 'These records belong to this profile across all its searches, including deleted searches. Another attempt requires explicit authorization.'));
-    for (const record of records) {
-      const location = value.monitors.find(item => item.id === record.monitorId);
-      const latest = search.results?.[record.monitorId];
-      const matched = latest?.matches.some(listing => listing.matched && listingKey(listing) === record.listingId);
-      const busy = ['queued', 'running'].includes(record.status);
-      const fresh = latest && !location?.error && Date.now() - latest.at <= Math.max(60000, (location?.intervalSeconds || 300) * 3000);
-      const row = element('div', {class: 'search-prior-action'}, element('strong', {}, record.listingName || record.listingId), element('p', {}, `${record.channel === 'email' ? 'Email' : 'Auto-apply'} · ${actionOutcome(record)} · ${record.at ? new Date(record.at).toLocaleString() : 'Date unavailable (older record)'}`), element('p', {class: 'helper'}, record.message || 'Previous attempt recorded.'));
-      const retry = button(record.channel === 'email' ? 'Authorize another email' : 'Authorize another application', () => showRepeatSearch(search, record));
-      retry.disabled = !search.enabled || !search.actions[record.channel] || !matched || !fresh || busy;
-      const reason = busy ? 'This action is already queued or running.' : !search.enabled ? 'Start this search before authorizing another attempt.' : !search.actions[record.channel] ? 'Enable this action when starting the search.' : !matched ? 'The apartment must match the search again.' : !fresh ? 'Run a fresh successful location check first.' : '';
-      if (reason) row.append(element('p', {class: 'helper'}, reason));
-      row.append(retry);
-      if (record.previousAttempts?.length) row.append(element('details', {class: 'search-earlier-attempts'}, element('summary', {}, `Earlier attempts (${record.previousAttempts.length})`), ...record.previousAttempts.map(attempt => element('p', {class: 'helper'}, `${attempt.at ? new Date(attempt.at).toLocaleString() : 'Older record'} · ${actionOutcome(attempt)} · ${attempt.message}`))));
-      duplicates.append(row);
-    }
-    if (!records.length) duplicates.append(element('p', {class: 'helper'}, 'No previous actions recorded for this profile at these locations.'));
-    const activity = element('details', {class: 'search-activity'}, element('summary', {}, `Action history (${search.activity?.length || 0})`));
-    if (!search.activity?.length) activity.append(element('p', {class: 'helper'}, 'Emails and application results will appear here after a match.'));
-    for (const item of search.activity || []) {
-      const status = ({review: 'Needs review', failed: 'Failed', interrupted: 'Interrupted', sent: 'Email sent', running: 'In progress', queued: 'Queued', cancelled: 'Cancelled'})[item.status] || item.status;
-      const row = element('div', {class: 'delivery-row'}, element('div', {}, element('strong', {}, `${item.channel === 'email' ? 'Email' : 'Auto-apply'} · ${item.listingName}`), element('p', {class: 'helper'}, `${new Date(item.at).toLocaleString()} · ${status}`), element('p', {}, item.message)));
-      if (item.tabId) row.append(button('Open application', () => request({type: 'open-application-target', tabId: item.tabId})));
-      activity.append(row);
-    }
-    const actions = element('div', {class: 'search-card-actions'}, button(search.enabled ? 'Pause search' : 'Start search', () => search.enabled ? request({type: 'set-search-enabled', id: search.id, enabled: false}) : showStartSearch(search), search.enabled ? 'secondary-button' : 'primary-button'), button('Edit search', () => showSearchEditor(search)));
-    const more = element('details', {class: 'search-more'}, element('summary', {'aria-label': `More actions for ${search.name}`}, '•••'), button('Delete search', () => request({type: 'delete-search', id: search.id}), 'search-delete'));
-    actions.append(more);
-    card.append(results, excluded, duplicates, activity, actions);
-    [results, excluded, duplicates, activity, more].forEach(details => { details.dataset.disclosure = details.className; details.open = expanded.get(search.id)?.[details.className] || false; });
-    root.append(card);
-    if (focusedCard === search.id && focusedLabel) [...card.querySelectorAll('button, summary')].find(item => item.textContent === focusedLabel)?.focus({preventScroll: true});
-  }
-  if (!root.childNodes.length) {
-    const empty = element('div', {class: 'search-empty'}, element('span', {class: 'search-empty-icon', 'aria-hidden': 'true'}, '⌕'), element('h3', {}, searches.length ? 'No searches for this profile' : 'No saved searches'), element('p', {}, 'Create a search with a profile, locations, criteria and actions.'), element('button', {class: 'primary-button', onclick: () => showSearchEditor()}, 'Create a search'));
-    root.append(empty);
-  }
-}
-$('#search-profile-filter').addEventListener('change', renderSearches);
-function searchProfilePreferences() {
-  const profile = applicantLibrary.profiles.find(item => item.id === $('#search-profile').value);
-  $('#search-recipient').textContent = profile?.details.email ? `Emails go to ${profile.details.email}.` : 'Save an email address in this profile to receive matches.';
-  return profile?.details || {};
-}
-function showProfileSearchCriteria(details) {
-  $('#search-profile-preferences').replaceChildren(...[
-    ['Monthly budget', details.maxRent ? `Up to €${details.maxRent}` : 'Any budget'],
-    ['Minimum size', details.minSize ? `${details.minSize} m²` : 'Any size'],
-    ['Apartment', ({studio:'Studio', '1-bedroom':'1 bedroom', '2-bedroom':'2 bedrooms', '3-plus':'3+ bedrooms'})[details.preferredApartmentType] || 'Any type'],
-    ['Earliest move-in', details.moveInFrom || 'First available date'],
-  ].map(([label, text]) => element('div', {}, element('dt', {}, label), element('dd', {}, text))));
-}
-function showSearchEditor(search = null) {
-  $('#search-form').reset();
-  $('#search-editor-title').textContent = search ? 'Edit profile search' : 'Create a profile search';
-  $('#search-id').value = search?.id || '';
-  $('#search-name').value = search?.name || '';
-  $('#search-profile').replaceChildren(...applicantLibrary.profiles.map(profile => element('option', {value: profile.id}, profile.name)));
-  $('#search-profile').value = search?.profileId || $('#search-profile-filter').value || applicantLibrary.activeId;
-  const defaults = searchProfilePreferences();
-  showProfileSearchCriteria(defaults);
-  $('#search-locations').replaceChildren(...value.monitors.map(monitor => element('label', {class: 'checkbox-label'}, element('input', {type: 'checkbox', name: 'search-location', value: monitor.id, ...(search?.locationIds.includes(monitor.id) ? {checked: ''} : {})}), monitor.name)));
-  $('#search-email').checked = search?.actions.email ?? true;
-  $('#search-auto-apply').checked = search?.actions.autoApply ?? false;
-  $('#search-create-account').checked = search?.createAccount ?? false;
-  $('#search-account-options').hidden = !$('#search-auto-apply').checked;
-  $('#search-error').hidden = true;
-  $('#search-editor').showModal();
-  $('#search-name').focus();
-}
-$('#search-auto-apply').addEventListener('change', () => { $('#search-account-options').hidden = !$('#search-auto-apply').checked; });
-$('#new-search').addEventListener('click', () => showSearchEditor());
-$('#search-profile').addEventListener('change', () => showProfileSearchCriteria(searchProfilePreferences()));
-$('#cancel-search').addEventListener('click', () => $('#search-editor').close());
-$('#search-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  const submit = event.submitter;
-  if (submit) submit.disabled = true;
-  try {
-    await request({type: 'save-search', search: {
-      id: $('#search-id').value || undefined, name: $('#search-name').value, profileId: $('#search-profile').value,
-      locationIds: [...document.querySelectorAll('input[name="search-location"]:checked')].map(item => item.value),
-      actions: {email: $('#search-email').checked, autoApply: $('#search-auto-apply').checked}, createAccount: $('#search-auto-apply').checked && $('#search-create-account').checked,
-    }});
-    $('#search-editor').close();
-    await loadState();
-    switchTab('searches');
-  } catch (error) { $('#search-error').textContent = error.message; $('#search-error').hidden = false; $('#search-error').scrollIntoView({block: 'center'}); }
-  finally { if (submit) submit.disabled = false; }
-});
 
-function actionOutcome(record) {
-  return ({sent: 'Accepted by email provider', review: 'Application attempted — needs review', failed: 'Attempt failed', interrupted: 'Interrupted — outcome uncertain', running: 'In progress', queued: 'Queued', cancelled: 'Cancelled after starting', recorded: 'Previous attempt recorded'})[record.status] || 'Previous attempt recorded';
-}
-function searchClaimRecords(search) {
-  return Object.entries(value.searchClaims || {}).flatMap(([key, claim]) => {
-    let parts;
-    try { parts = JSON.parse(key); } catch { return []; }
-    if (!Array.isArray(parts) || parts[0] !== search.profileId || !search.locationIds.includes(parts[1])) return [];
-    return [{...(typeof claim === 'string' ? {id: claim, status: 'recorded'} : claim), monitorId: parts[1], listingId: parts[2], channel: parts[3]}];
-  }).sort((a, b) => (b.at || 0) - (a.at || 0));
-}
-function listingClaimBadges(search, monitorId, listing) {
-  return element('span', {class: 'listing-claim-badges'}, ...['autoApply', 'email'].flatMap(channel => {
-    const claim = value.searchClaims?.[searchClaimKey(search.profileId, monitorId, listingKey(listing), channel)];
-    return claim ? [element('span', {}, `${channel === 'email' ? 'Email' : 'Auto-apply'}: ${actionOutcome(claim)}`)] : [];
-  }));
-}
-let startSearchSelection = null;
-let readinessRequest = 0;
-function startSearchActions() {
-  return {autoApply: $('#start-auto-apply').checked, email: $('#start-email').checked, sms: $('#start-sms').checked};
-}
-async function showStartSearch(search) {
-  startSearchSelection = {id: search.id, generation: search.generation};
-  const profile = applicantLibrary.profiles.find(profile => profile.id === search.profileId);
-  $('#start-search-title').textContent = `Start search for ${profile?.name || 'this profile'}`;
-  $('#start-search-description').textContent = `${search.name} · ${profile?.details.email || 'No profile email saved'}`;
-  $('#start-auto-apply').checked = search.actions.autoApply;
-  $('#start-email').checked = search.actions.email;
-  $('#start-sms').checked = false;
-  $('#start-create-account').checked = search.createAccount;
-  $('#start-search-error').hidden = true;
-  $('#start-search-dialog').showModal();
-  await updateStartReadiness();
-}
-async function updateStartReadiness() {
-  if (!startSearchSelection || !$('#start-search-dialog').open) return;
-  const version = ++readinessRequest;
-  $('#start-account-options').hidden = !$('#start-auto-apply').checked;
-  const confirm = $('#confirm-start-search');
-  confirm.disabled = true;
-  confirm.textContent = 'Checking…';
-  const root = $('#start-search-readiness');
-  try {
-    const report = await request({type: 'search-readiness', id: startSearchSelection.id, actions: startSearchActions(), createAccount: $('#start-auto-apply').checked && $('#start-create-account').checked});
-    if (version !== readinessRequest || !$('#start-search-dialog').open) return;
-    root.replaceChildren(element('h3', {}, report.canStart ? report.ready ? 'Ready to start' : 'Can start · website input expected' : 'Complete these checks first'));
-    if (report.blockers.length) root.append(element('ul', {class: 'readiness-blockers'}, ...report.blockers.map(text => element('li', {}, text))));
-    for (const location of report.locations) {
-      const details = element('details', {}, element('summary', {}, `${location.name} · ${location.ready ? 'Checked' : 'Needs details'}`));
-      if (location.missingRequired?.length) details.append(element('p', {}, `Needed before starting: ${location.missingRequired.join(', ')}.`));
-      if (location.missing?.length) details.append(element('p', {}, `Website input expected: ${location.missing.join(', ')}.`));
-      details.append(element('p', {class: 'helper'}, location.note));
-      if (location.missing?.length || location.missingRequired?.length) details.open = true;
-      root.append(details);
-    }
-    for (const text of report.warnings) root.append(element('p', {class: 'readiness-warning'}, text));
-    root.append(element('button', {type: 'button', class: 'text-button', onclick: guard(async () => {
-      const search = value.searches.find(search => search.id === startSearchSelection.id);
-      if (search && applicantLibrary.profiles.some(profile => profile.id === search.profileId)) await request({type: 'select-profile', id: search.profileId});
-      $('#start-search-dialog').close();
-      await loadState();
-      switchTab('personal');
-    })}, 'Review profile details →'));
-    confirm.disabled = !report.canStart;
-    confirm.textContent = report.canStart && !report.ready ? 'Start search — review needed' : 'Start search';
-  } catch (error) {
-    if (version !== readinessRequest) return;
-    root.replaceChildren(element('p', {class: 'form-error'}, error.message));
-    confirm.textContent = 'Start search';
-  }
-}
-for (const id of ['start-auto-apply', 'start-email', 'start-sms', 'start-create-account']) $(`#${id}`).addEventListener('change', updateStartReadiness);
-$('#cancel-start-search').addEventListener('click', () => $('#start-search-dialog').close());
-$('#start-search-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  $('#confirm-start-search').disabled = true;
-  try {
-    await request({type: 'set-search-enabled', id: startSearchSelection.id, expectedGeneration: startSearchSelection.generation, enabled: true, actions: startSearchActions(), createAccount: $('#start-auto-apply').checked && $('#start-create-account').checked});
-    $('#start-search-dialog').close();
-    await loadState();
-  } catch (error) {
-    $('#start-search-error').textContent = error.message;
-    $('#start-search-error').hidden = false;
-    $('#start-search-error').scrollIntoView({block: 'center'});
-    await updateStartReadiness();
-  }
+chrome.tabs.getCurrent().then(tab => { $("#expand").hidden = Boolean(tab); }).catch(() => {});
+
+$("#copy-diagnostics").addEventListener("click", copyDiagnostics);
+$("#download-diagnostics").addEventListener("click", downloadDiagnostics);
+window.addEventListener("error", event => {
+  const error = event.error || event.message;
+  rememberError("dashboard-script", error);
+  toast(`Unexpected dashboard error: ${diagnosticText(error?.message || error)}`, true);
 });
-let repeatSearchSelection = null;
-function showRepeatSearch(search, record) {
-  repeatSearchSelection = {id: search.id, monitorId: record.monitorId, listingId: record.listingId, channel: record.channel, expectedClaimId: claimActionId(record)};
-  $('#repeat-search-form').reset();
-  $('#repeat-search-title').textContent = record.channel === 'email' ? 'Authorize another email' : 'Authorize another application';
-  $('#repeat-search-details').replaceChildren(...[
-    ['Profile', applicantLibrary.profiles.find(profile => profile.id === search.profileId)?.name || 'Deleted profile'],
-    ['Apartment', record.listingName || record.listingId],
-    ['Previous outcome', actionOutcome(record)],
-    ['Recorded', record.at ? new Date(record.at).toLocaleString() : 'Date unavailable'],
-    ['Details', record.message || 'Previous attempt recorded.'],
-  ].map(([label, text]) => element('div', {}, element('dt', {}, label), element('dd', {}, text))));
-  $('#repeat-search-warning').textContent = record.channel === 'email' ? 'The profile holder may already have received this apartment. This authorizes one additional email.' : 'An application or reservation may already exist. Inspect the previous tab first. This authorizes one additional application attempt.';
-  $('#repeat-search-error').hidden = true;
-  $('#repeat-search-dialog').showModal();
-}
-$('#cancel-repeat-search').addEventListener('click', () => $('#repeat-search-dialog').close());
-$('#repeat-search-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  const submit = $('#confirm-repeat-search');
-  submit.disabled = true;
-  try {
-    await request({type: 'repeat-search-action', ...repeatSearchSelection, confirmed: $('#repeat-search-consent').checked});
-    $('#repeat-search-dialog').close();
-    await loadState();
-  } catch (error) { $('#repeat-search-error').textContent = error.message; $('#repeat-search-error').hidden = false; }
-  finally { submit.disabled = false; }
+window.addEventListener("unhandledrejection", event => {
+  rememberError("dashboard-promise", event.reason);
+  toast(`Dashboard action failed: ${diagnosticText(event.reason?.message || event.reason)}`, true);
 });

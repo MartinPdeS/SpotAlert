@@ -151,7 +151,11 @@ def test_extension_has_stable_id_and_restricted_permissions():
         "https://canvas-world.securerc.co.uk/*",
         "https://www.canvas-world.com/*",
     ]
-    assert "nativeMessaging" not in manifest["permissions"]
+    # The optional applicant-profile folder uses the native helper; monitoring
+    # itself still runs entirely inside Chrome.
+    assert set(manifest["permissions"]) == {
+        "storage", "nativeMessaging", "sidePanel", "scripting", "alarms", "tabs",
+    }
     assert "sidePanel" in manifest["permissions"]
 
 

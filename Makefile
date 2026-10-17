@@ -4,12 +4,13 @@ PYTHON ?= python3
 PROFILE ?= ourdomain-amsterdam-diemen
 INTERVAL ?= 300
 
-.PHONY: help install editable browser tui watch test quality check clean extension-test extension-browser-test
+.PHONY: help install editable browser tui watch test quality check clean extension-test extension-browser-test extension
 
 help:
-	@echo "SpotAlert development commands"
+	@echo "SpotAlert: Chrome extension (primary app), optional Python tools"
 	@echo ""
-	@echo "  make install               Install the package and development dependencies"
+	@echo "  make extension             Show Chrome extension installation instructions"
+	@echo "  make install               Install optional Python tools and test dependencies"
 	@echo "  make editable              Install the package in editable mode"
 	@echo "  make browser               Install Google Chrome for browser checks"
 	@echo "  make tui                   Open the terminal user interface"
@@ -20,6 +21,11 @@ help:
 	@echo "  make quality               Run static checks"
 	@echo "  make check                 Run quality and tests"
 	@echo "  make clean                 Remove generated Python artifacts"
+
+extension:
+	@echo "Open chrome://extensions, enable Developer mode, and Load unpacked:"
+	@echo "  $(CURDIR)/SpotAlert/chrome_extension"
+	@echo "See README.md; Python is not required to run the extension."
 
 install:
 	$(PYTHON) -m pip install ".[dev,testing]"
@@ -51,6 +57,10 @@ extension-browser-test:
 	$(PYTHON) scripts/test_searches_browser.py
 	$(PYTHON) scripts/test_email_browser.py
 	$(PYTHON) scripts/test_panel_browser.py
+	$(PYTHON) scripts/test_profile_browser.py
+	$(PYTHON) scripts/test_application_browser.py
+	$(PYTHON) scripts/test_workspace_browser.py
+	$(PYTHON) scripts/test_page_read_browser.py
 
 check: quality test extension-test
 

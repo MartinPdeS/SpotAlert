@@ -22,20 +22,24 @@ export const PROFILE_SECTIONS = [
 ];
 export const PROFILE_FIELDS = PROFILE_SECTIONS.flatMap(section => section.fields.map(([field]) => field));
 
-export function temporaryRegistrationDetails() {
+/** Generate a password without replacing the applicant's identity details. */
+export function generateRegistrationPassword() {
   const bytes = crypto.getRandomValues(new Uint8Array(24));
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-  const registrationPassword = "Aa7!" + [...bytes].map(byte => alphabet[byte % alphabet.length]).join("");
-  const year = 1990 + bytes[0] % 11, month = 1 + bytes[1] % 12, day = 1 + bytes[2] % 28;
-  return {registrationPassword, dateOfBirth: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`};
+  return "Aa7!" + [...bytes].map(byte => alphabet[byte % alphabet.length]).join("");
+}
+
+export function requiredProfileFields(profile = {}) {
+  const required = ["title", "firstName", "lastName", "email", "phone", "dateOfBirth", "nationality", "countryOfResidence", "address", "postalCode", "city", "residencyFrom", "monthlyHousingCost", "reasonForMoving", "emergencyName", "emergencyRelationship", "emergencyPhone", "emergencyAddress", "emergencyPostalCode", "emergencyCity", "university", "study", "graduated", "phd", "hasPets", "hasVehicles", "receiveEmail", "receiveSms"];
+  if (profile.noMiddleName !== "Yes") required.push("middleName");
+  return required;
 }
 
 export function profileCompleteness(profile = {}) {
-  const required = ["title", "firstName", "lastName", "email", "phone", "dateOfBirth", "nationality", "countryOfResidence", "address", "postalCode", "city", "residencyFrom", "monthlyHousingCost", "reasonForMoving", "emergencyName", "emergencyRelationship", "emergencyPhone", "emergencyAddress", "emergencyPostalCode", "emergencyCity", "university", "study", "graduated", "phd", "hasPets", "hasVehicles", "receiveEmail", "receiveSms"];
-  if (profile.noMiddleName !== "Yes") required.push("middleName");
+  const required = requiredProfileFields(profile);
   const labels = Object.fromEntries(PROFILE_SECTIONS.flatMap(section => section.fields.map(([key, label]) => [key, label])));
-  const missing = required.filter(key => !String(profile[key] || "").trim()).map(key => labels[key]);
-  return {ready: !missing.length, complete: required.length - missing.length, total: required.length, missing};
+  const missingFields = required.filter(key => !String(profile[key] || "").trim()).map(key => ({key, label: labels[key]}));
+  return {ready: !missingFields.length, complete: required.length - missingFields.length, total: required.length, missing: missingFields.map(field => field.label), missingFields};
 }
 
 export function validateProfile(input = {}) {

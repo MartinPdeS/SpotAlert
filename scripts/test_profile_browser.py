@@ -1,4 +1,5 @@
 """Check expanded profile storage and person-specific Canvas autofill."""
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -17,7 +18,7 @@ def main():
             worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profile folder disabled in isolated tests');};}")
             panel = context.new_page()
             panel.goto(worker.url.replace('background.js', 'panel.html'))
-            panel.get_by_role('tab', name='Personal information', exact=True).click()
+            panel.get_by_role('tab', name='Profiles', exact=True).click()
             for summary in panel.locator('.profile-group summary').all():
                 if not summary.evaluate('(e)=>e.parentElement.open'):
                     summary.click()
@@ -25,11 +26,14 @@ def main():
             for field, value in values.items():
                 panel.locator(f'#personal-{field}').fill(value)
             for field, value in {'title':'Mr.', 'noMiddleName':'Yes', 'employmentStatus':'Employed', 'hasPets':'No', 'hasVehicles':'Yes', 'receiveEmail':'No'}.items():
-                panel.locator(f'#personal-{field}').select_option(value)
-            panel.get_by_role('button', name='Save personal information', exact=True).click()
+                if field == 'noMiddleName':
+                    panel.locator(f'#personal-{field}').check()
+                else:
+                    panel.locator(f'#personal-{field}').select_option(value)
+            panel.get_by_role('button', name='Save profile', exact=True).click()
             expect(panel.locator('#application-readiness')).to_have_text('Missing details')
             panel.reload()
-            panel.get_by_role('tab', name='Personal information', exact=True).click()
+            panel.get_by_role('tab', name='Profiles', exact=True).click()
             expect(panel.locator('#personal-dateOfBirth')).to_have_value('1995-03-04')
             expect(panel.locator('#personal-hasPets')).to_have_value('No')
             original_id = panel.locator('#saved-profile').input_value()
@@ -42,7 +46,7 @@ def main():
                     summary.click()
             panel.locator('#personal-firstName').fill('Sam')
             panel.locator('#personal-registrationPassword').fill('SamPassword123!')
-            panel.get_by_role('button', name='Save personal information', exact=True).click()
+            panel.get_by_role('button', name='Save profile', exact=True).click()
             expect(panel.locator('#toast')).to_contain_text('saved')
             panel.locator('#saved-profile').select_option(original_id)
             expect(panel.locator('#personal-firstName')).to_have_value('Alex')
@@ -50,7 +54,7 @@ def main():
             panel.locator('#saved-profile').select_option(second_id)
             expect(panel.locator('#personal-registrationPassword')).to_have_value('SamPassword123!')
             panel.reload()
-            panel.get_by_role('tab', name='Personal information', exact=True).click()
+            panel.get_by_role('tab', name='Profiles', exact=True).click()
             expect(panel.locator('#profile-name')).to_have_value('Sam')
             panel.locator('#saved-profile').select_option(original_id)
             expect(panel.locator('#personal-firstName')).to_have_value('Alex')
@@ -94,14 +98,15 @@ def main():
                 expect(reg.locator(f'#{field}')).to_have_value(value)
             expect(reg.locator('#SubscribeToEmails')).not_to_be_checked()
             assert reg.locator('body').get_attribute('data-created') is None
-            panel.get_by_role('tab', name='Personal information', exact=True).click()
+            panel.get_by_role('tab', name='Profiles', exact=True).click()
             panel.locator('.profile-tools summary').click()
             panel.locator('#generate-registration-details').click()
             temporary_birth = panel.locator('#personal-dateOfBirth').input_value()
+            assert temporary_birth == '1995-03-04', 'Password generation changed the applicant birth date'
             assert len(panel.locator('#personal-registrationPassword').input_value()) >= 24
-            panel.get_by_role('button', name='Save personal information', exact=True).click()
+            panel.get_by_role('button', name='Save profile', exact=True).click()
             panel.reload()
-            panel.get_by_role('tab', name='Personal information', exact=True).click()
+            panel.get_by_role('tab', name='Profiles', exact=True).click()
             expect(panel.locator('#personal-dateOfBirth')).to_have_value(temporary_birth)
             response = panel.evaluate("async () => chrome.runtime.sendMessage({type:'fill-application'})")
             assert response['ok'], response
@@ -111,11 +116,19 @@ def main():
             assert reg.locator('body').get_attribute('data-created') is None
             for width in [320, 1280]:
                 panel.set_viewport_size({'width':width,'height':900})
-                panel.get_by_role('tab', name='Personal information', exact=True).click()
+                panel.get_by_role('tab', name='Profiles', exact=True).click()
                 assert panel.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 screenshots = ROOT / 'artifacts/extension'
                 screenshots.mkdir(parents=True, exist_ok=True)
                 panel.screenshot(path=str(screenshots / f'personal-redesign-{width}.png'), full_page=True)
+            if not panel.locator('.profile-tools').evaluate('(element) => element.open'):
+                panel.locator('.profile-tools summary').click()
+            panel.locator('#create-test-profiles').click()
+            expect(panel.locator('#saved-profile option')).to_have_count(4)
+            expect(panel.locator('#profile-name')).to_have_value(re.compile(r'Test profile 1'))
+            assert panel.locator('#personal-email').input_value().endswith('@example.com')
+            panel.locator('#create-test-profiles').click()
+            expect(panel.locator('#saved-profile option')).to_have_count(4)
             panel.get_by_role('tab', name='Clients', exact=True).click()
             reply = panel.evaluate("async()=>{const {clientQuestionnaire}=await import('./clients.js');return clientQuestionnaire('Jamie').replace('First name: ', 'First name: Jamie').replace('Email: ', 'Email: jamie@example.com').replace('Password: ', 'Password: ClientExisting123!');}")
             panel.locator('#client-profile-name').fill('Jamie client')
@@ -129,8 +142,8 @@ def main():
             expect(panel.locator('#profile-name')).to_have_value('Jamie client')
             expect(panel.locator('#personal-firstName')).to_have_value('Jamie')
             expect(panel.locator('#personal-registrationPassword')).to_have_value('ClientExisting123!')
-            panel.get_by_role('tab', name='Personal information', exact=True).click()
-            expect(panel.locator('#client-overview-list')).to_contain_text('Jamie client')
+            panel.get_by_role('tab', name='Profiles', exact=True).click()
+            expect(panel.locator('#profile-name')).to_have_value('Jamie client')
             expect(panel.locator('#client-overview-list')).to_contain_text('Missing details')
             panel.screenshot(path=str(ROOT/'artifacts/extension/client-readiness-overview.png'), full_page=True)
         finally:
