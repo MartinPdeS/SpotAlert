@@ -65,7 +65,11 @@ sensitive or unfamiliar steps; an attempt is not a final submission.
 ## Styles
 
 `panel.css` is the dashboard's single stylesheet. Shared color, type, spacing, and
-radius tokens live at the top. Component rules and responsive overrides preserve
+radius tokens live at the top. Slate foundation tokens (`--bg`, `--surface`,
+`--raised`, `--field`) keep surfaces neutral. Use `--accent` for interaction and
+focus, `--success` for confirmed positive states, `--amber` for attention, and
+`--red` for errors. Each status has a matching subtle surface and border token.
+Keep text/action contrast when changing these tokens. Component rules and responsive overrides preserve
 the cascade's ordering. Superseded declarations have been removed. Edit existing
 component rules rather than appending a new override sheet. Keep responsive
 behavior with the relevant rule group where cascade order permits, and verify

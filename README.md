@@ -31,6 +31,8 @@ Navigation follows **My searches, Websites, Applicants, Clients, Settings**.
 questionnaires and replies. Reload is available in **Settings → Extension**; an
 update-required notice still appears above navigation when needed. Search result
 links and availability carry more emphasis than timing and check telemetry.
+The dark workspace uses slate surfaces with an iris accent for actions and
+selection, green for successful states, amber for attention, and coral for errors.
 The shared action bar groups **Start/Stop monitoring** and **Check now** above
 the buildings. Each detail panel shows availability and settings. **Stop monitoring** leaves profile searches running; pausing
 the last profile search leaves general monitoring running if it is on. Page reads
