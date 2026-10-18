@@ -14,6 +14,7 @@ def main():
         panel = context.new_page()
         panel.goto(worker.url.replace('background.js', 'panel.html'))
         panel.get_by_role('tab', name='Applicants', exact=True).click()
+        panel.locator('#profile-readiness-location').select_option('canvas-rotterdam-blaak')
         for summary in panel.locator('.profile-group summary').all():
             if not summary.evaluate('(e)=>e.parentElement.open'):
                 summary.click()
@@ -25,14 +26,15 @@ def main():
                 panel.locator(f'#personal-{field}').check()
             else:
                 panel.locator(f'#personal-{field}').select_option(value)
-        panel.get_by_role('button', name='Save profile', exact=True).click()
-        expect(panel.locator('#application-readiness')).to_have_text('Missing details')
+        panel.get_by_role('button', name='Save applicant', exact=True).click()
+        expect(panel.locator('#application-readiness')).to_have_text(re.compile(r'\d+ details? needed'))
         panel.reload()
         panel.get_by_role('tab', name='Applicants', exact=True).click()
+        panel.locator('#profile-readiness-location').select_option('canvas-rotterdam-blaak')
         expect(panel.locator('#personal-dateOfBirth')).to_have_value('1995-03-04')
         expect(panel.locator('#personal-hasPets')).to_have_value('No')
         original_id = panel.locator('#saved-profile').input_value()
-        panel.get_by_role('button', name='New profile', exact=False).click()
+        panel.get_by_role('button', name='New applicant', exact=False).click()
         expect(panel.locator('#personal-firstName')).to_have_value('')
         second_id = panel.locator('#saved-profile').input_value()
         panel.locator('#profile-name').fill('Sam')
@@ -41,7 +43,7 @@ def main():
                 summary.click()
         panel.locator('#personal-firstName').fill('Sam')
         panel.locator('#personal-registrationPassword').fill('SamPassword123!')
-        panel.get_by_role('button', name='Save profile', exact=True).click()
+        panel.get_by_role('button', name='Save applicant', exact=True).click()
         expect(panel.locator('#toast')).to_contain_text('saved')
         panel.locator('#saved-profile').select_option(original_id)
         expect(panel.locator('#personal-firstName')).to_have_value('Alex')
@@ -50,6 +52,7 @@ def main():
         expect(panel.locator('#personal-registrationPassword')).to_have_value('SamPassword123!')
         panel.reload()
         panel.get_by_role('tab', name='Applicants', exact=True).click()
+        panel.locator('#profile-readiness-location').select_option('canvas-rotterdam-blaak')
         expect(panel.locator('#profile-name')).to_have_value('Sam')
         panel.locator('#saved-profile').select_option(original_id)
         expect(panel.locator('#personal-firstName')).to_have_value('Alex')
@@ -94,14 +97,16 @@ def main():
         expect(reg.locator('#SubscribeToEmails')).not_to_be_checked()
         assert reg.locator('body').get_attribute('data-created') is None
         panel.get_by_role('tab', name='Applicants', exact=True).click()
+        panel.locator('#profile-readiness-location').select_option('canvas-rotterdam-blaak')
         panel.locator('.profile-tools summary').click()
         panel.locator('#generate-registration-details').click()
         temporary_birth = panel.locator('#personal-dateOfBirth').input_value()
         assert temporary_birth == '1995-03-04', 'Password generation changed the applicant birth date'
         assert len(panel.locator('#personal-registrationPassword').input_value()) >= 24
-        panel.get_by_role('button', name='Save profile', exact=True).click()
+        panel.get_by_role('button', name='Save applicant', exact=True).click()
         panel.reload()
         panel.get_by_role('tab', name='Applicants', exact=True).click()
+        panel.locator('#profile-readiness-location').select_option('canvas-rotterdam-blaak')
         expect(panel.locator('#personal-dateOfBirth')).to_have_value(temporary_birth)
         response = panel.evaluate("async () => chrome.runtime.sendMessage({type:'fill-application'})")
         assert response['ok'], response
@@ -112,6 +117,7 @@ def main():
         for width in [320, 1280]:
             panel.set_viewport_size({'width':width,'height':900})
             panel.get_by_role('tab', name='Applicants', exact=True).click()
+            panel.locator('#profile-readiness-location').select_option('canvas-rotterdam-blaak')
             assert panel.evaluate('document.documentElement.scrollWidth <= innerWidth')
             screenshots = ROOT / 'artifacts/extension'
             screenshots.mkdir(parents=True, exist_ok=True)
@@ -132,14 +138,15 @@ def main():
         expect(panel.locator('#client-import-preview')).to_contain_text('jamie@example.com')
         expect(panel.locator('#client-import-preview')).to_contain_text('Password provided · hidden')
         expect(panel.locator('#client-import-preview')).not_to_contain_text('ClientExisting123!')
-        panel.get_by_role('button', name='Create profile', exact=True).click()
+        panel.get_by_role('button', name='Create applicant', exact=True).click()
         expect(panel.locator('#personal-view')).to_be_visible()
         expect(panel.locator('#profile-name')).to_have_value('Jamie client')
         expect(panel.locator('#personal-firstName')).to_have_value('Jamie')
         expect(panel.locator('#personal-registrationPassword')).to_have_value('ClientExisting123!')
         panel.get_by_role('tab', name='Applicants', exact=True).click()
+        panel.locator('#profile-readiness-location').select_option('canvas-rotterdam-blaak')
         expect(panel.locator('#profile-name')).to_have_value('Jamie client')
-        expect(panel.locator('#client-overview-list')).to_contain_text('Missing details')
+        expect(panel.locator('#client-overview-list')).to_contain_text('details needed')
         panel.screenshot(path=str(ROOT/'artifacts/extension/client-readiness-overview.png'), full_page=True)
     print('Expanded profile browser check passed: persistence, separate people, dates, choices, consent untouched and responsive layout.')
 

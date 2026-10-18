@@ -2100,7 +2100,7 @@ input[type="checkbox"] {
   }
 
   .channel-heading {
-    min-height: 40px;
+    min-height: 44px;
   }
 
   .notification-channel-grid {
@@ -3362,7 +3362,7 @@ input[type="checkbox"] {
 }
 
 .search-editor-footer button {
-  min-height: 42px;
+  min-height: 44px;
   white-space: nowrap;
 }
 
@@ -3713,7 +3713,7 @@ input[type="checkbox"] {
 }
 
 .search-prior-action button {
-  min-height: 42px;
+  min-height: 44px;
   margin-top: var(--space-2);
 }
 
@@ -3993,7 +3993,7 @@ label, .checkbox-label {
 }
 
 .primary-button, .secondary-button, .small-button {
-  min-height: 40px;
+  min-height: 44px;
   padding: 9px 14px;
   border-radius: var(--radius-control);
   font-size: var(--text-md);
@@ -4030,7 +4030,7 @@ a.secondary-button {
 }
 
 input:not([type="checkbox"]), select, textarea {
-  min-height: 42px;
+  min-height: 44px;
   font-size: var(--text-base);
   background: var(--field);
   border-color: var(--line-strong);
@@ -4082,7 +4082,7 @@ input::placeholder, textarea::placeholder {
 .search-heading > .primary-button {
   width: auto;
   flex-shrink: 0;
-  min-height: 40px;
+  min-height: 44px;
   padding: 10px var(--space-4);
   margin: 0px;
 }
@@ -4109,7 +4109,7 @@ input::placeholder, textarea::placeholder {
 }
 
 .search-filter {
-  min-height: 40px;
+  min-height: 44px;
   padding: var(--space-2) 10px;
   border: 1px solid transparent;
   border-radius: var(--radius-control);
@@ -4137,7 +4137,7 @@ input::placeholder, textarea::placeholder {
   border-radius: var(--radius-control);
   padding: 9px var(--space-3);
   font-size: var(--text-sm);
-  min-height: 40px;
+  min-height: 44px;
   margin-bottom: 1px;
 }
 
@@ -4198,7 +4198,7 @@ input::placeholder, textarea::placeholder {
 .search-card {
   display: grid;
   grid-template-columns: minmax(0px, 1fr) auto;
-  grid-template-areas: "heading actions" "criteria actions" "meta actions" "progress actions";
+  grid-template-areas: "heading actions" "criteria actions" "outcome actions";
   gap: 5px var(--space-6);
   padding: 18px var(--space-5);
   border-radius: var(--radius-card);
@@ -4212,7 +4212,7 @@ input::placeholder, textarea::placeholder {
 
 .search-card-heading {
   grid-area: heading;
-  justify-content: flex-start;
+  justify-content: space-between;
   gap: var(--space-4);
 }
 
@@ -4259,6 +4259,28 @@ input::placeholder, textarea::placeholder {
   50% { opacity: 0.35; }
 }
 
+/* Search cards expose identity, preferences, and one current outcome. */
+.search-outcome {
+  grid-area: outcome;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 8px 0 0;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.search-outcome strong { color: var(--ink); font-weight: 650; }
+.search-outcome.failed strong, .search-outcome.outdated strong { color: var(--amber); }
+.search-outcome.checking strong { color: var(--accent); }
+.search-check-details label { max-width: 240px; margin-top: 12px; }
+.start-search-summary { padding: 14px 16px; margin: 16px 0; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--raised); font-size: var(--text-md); }
+#start-search-options > summary { cursor: pointer; padding: 8px 0; color: var(--muted); }
+#start-search-options[open] > summary { color: var(--ink); }
+.profile-readiness { min-width: 0; max-width: 320px; }
+.profile-search-readiness { display: block; color: var(--success); font-size: var(--text-md); margin-bottom: 8px; }
+.profile-readiness-picker { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.profile-readiness-picker select { width: 100%; min-width: 0; font-size: var(--text-sm); }
 .search-criteria-summary {
   grid-area: criteria;
   font-size: var(--text-md);
@@ -4372,19 +4394,19 @@ input::placeholder, textarea::placeholder {
 }
 
 .search-card-actions > .secondary-button, .search-card-actions > .primary-button {
-  min-height: 38px;
+  min-height: 44px;
   white-space: nowrap;
 }
 
 .search-card-actions > .text-button {
-  min-height: 38px;
+  min-height: 44px;
   padding-inline: 8px;
   white-space: nowrap;
 }
 
 .search-refresh-select {
   width: 98px;
-  min-height: 38px;
+  min-height: 44px;
   padding: 6px var(--space-2);
   font-size: var(--text-sm);
 }
@@ -4811,7 +4833,7 @@ input::placeholder, textarea::placeholder {
 }
 
 .profile-picker button {
-  min-height: 42px;
+  min-height: 44px;
   white-space: nowrap;
 }
 
@@ -4913,7 +4935,7 @@ input::placeholder, textarea::placeholder {
 }
 
 #personal-form input:not([type="checkbox"]), #personal-form select {
-  min-height: 42px;
+  min-height: 44px;
   font-size: var(--text-base);
 }
 
@@ -4989,7 +5011,7 @@ input::placeholder, textarea::placeholder {
 }
 
 .profile-bottom-buttons button {
-  min-height: 40px;
+  min-height: 44px;
 }
 
 body:has(#personal-view:not([hidden])) .toast {
@@ -5079,7 +5101,7 @@ body:has(#personal-view:not([hidden])) .toast {
   display: block;
   position: static;
   width: 100%;
-  min-height: 38px;
+  min-height: 44px;
   border: 0px;
   box-shadow: none;
   padding: 9px 10px;
@@ -5148,7 +5170,7 @@ body:has(#personal-view:not([hidden])) .toast {
 .monitor-options-content #refresh-interval {
   width: 100%;
   margin-top: 7px;
-  min-height: 40px;
+  min-height: 44px;
 }
 
 .monitor-options-content #configure-monitor {
@@ -5158,7 +5180,7 @@ body:has(#personal-view:not([hidden])) .toast {
 @media (max-width: 959px) {
   .search-card {
     grid-template-columns: minmax(0px, 1fr);
-    grid-template-areas: "heading" "criteria" "meta" "progress" "actions";
+    grid-template-areas: "heading" "criteria" "outcome" "actions";
   }
 
   .search-card-bottom {
@@ -5550,7 +5572,7 @@ body:has(#personal-view:not([hidden])) .toast {
 }
 
 .building-main-actions > button {
-  min-height: 40px;
+  min-height: 44px;
   padding: 9px 14px;
   font-size: var(--text-sm);
   white-space: nowrap;
@@ -5730,7 +5752,7 @@ body:has(#personal-view:not([hidden])) .toast {
 }
 
 .building-check-actions > button {
-  min-height: 40px;
+  min-height: 44px;
   white-space: nowrap;
 }
 
@@ -5814,21 +5836,17 @@ body:has(#personal-view:not([hidden])) .toast {
 }
 
 .view-search-results {
-  min-height: 42px;
+  min-height: 44px;
   padding: 9px var(--space-3);
-  border: 1px solid var(--line-strong);
   border-radius: var(--radius-control);
-  background: var(--raised);
-  color: var(--ink);
   font-size: var(--text-base);
   font-weight: 650;
   text-align: center;
 }
 
-.view-search-results:hover {
+.view-search-results.secondary-button:hover {
   background: var(--raised);
   border-color: var(--accent);
-  color: var(--ink);
 }
 
 .search-card-meta {

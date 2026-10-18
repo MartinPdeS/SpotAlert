@@ -50,8 +50,8 @@ def main():
         panel.locator('#saved-profile').select_option(original_id)
         expect(panel.locator('#profile-name')).to_have_value(original_name)
         expect(panel.locator('#client-overview-list .profile-readiness')).to_have_count(1)
-        expect(panel.locator('#client-overview-list')).not_to_contain_text('OurDomain')
-        expect(panel.locator('#client-overview-list')).not_to_contain_text('Canvas')
+        expect(panel.locator('#profile-readiness-location option')).to_have_count(3)
+        expect(panel.locator('.profile-search-readiness')).to_have_text('Ready to search')
         panel.evaluate('''async () => {
             const key='spotalert.monitors.v2'; const s=(await chrome.storage.local.get(key))[key];
             for(const m of s.monitors) { m.application=null; m.samples=[{id:'studio',name:'Studio',matched:true,index:1}]; }

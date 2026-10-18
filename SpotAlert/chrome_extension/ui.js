@@ -1,5 +1,6 @@
+import {SUPPORTED_SITES} from "./sites/index.js";
 import {searchClaimKey} from "./searches.js";
-import {profileCompleteness} from "./profile.js";
+import {profileReadinessForSite} from "./profile.js";
 
 /** Presentation calculations shared by the side panel and workspace. */
 export const UI_KEY = "spotalert.ui.v1";
@@ -46,16 +47,22 @@ export function attentionItems(state, library) {
     if (!latestActions.has(key) || (record.at || 0) > (latestActions.get(key).at || 0)) latestActions.set(key, record);
   }
   for (const monitor of state.monitors || []) if (monitor.error) items.push({
-    id: `location:${monitor.id}`, title: monitor.name, message: cleanError(monitor.name, monitor.url, monitor.error),
-    action: 'location', monitorId: monitor.id, label: 'Review location',
+    id: `location:${monitor.id}`, title: `${monitor.name} · ${locationIssue(monitor.errorKind).label}`, message: errorRecovery(monitor.errorKind),
+    action: 'location', monitorId: monitor.id, label: locationIssue(monitor.errorKind).action,
   });
   const missingProfiles = new Set();
   for (const search of state.searches || []) {
     const profile = profiles.find(entry => entry.id === search.profileId);
     if (search.enabled && search.actions.autoApply && profile && !missingProfiles.has(profile.id)) {
-      const missing = profileCompleteness(profile.details).missingFields;
+      const locations = new Set((state.searches || [])
+        .filter(item => item.enabled && item.actions.autoApply && item.profileId === profile.id)
+        .flatMap(item => item.locationIds || []));
+      const sites = SUPPORTED_SITES.filter(site => locations.has(site.id));
+      const missing = [...new Map((sites.length ? sites : SUPPORTED_SITES.slice(0, 1))
+        .flatMap(site => profileReadinessForSite(profile.details, site).missingFields)
+        .map(field => [field.key, field])).values()];
       if (missing.length) {
-        items.push({id: `profile:${profile.id}`, title: profile.name, message: `${missing.length} applicant details still needed.`, action: 'profile', profileId: profile.id, field: missing[0].key, label: 'Complete profile'});
+        items.push({id: `profile:${profile.id}`, title: profile.name, message: `${missing.length} applicant details still needed.`, action: 'profile', profileId: profile.id, field: missing[0].key, label: 'Complete details'});
         missingProfiles.add(profile.id);
       }
     }
@@ -70,7 +77,7 @@ export function attentionItems(state, library) {
         id: `action:${record.id}`, title: `${search.name} · ${record.listingName || 'Apartment'}`, message: record.message || 'Review the previous attempt.',
         action: record.tabId ? 'application' : 'search', tabId: record.tabId, searchId: search.id, profileId: search.profileId,
         section: 'search-activity', channel: record.channel,
-        label: record.tabId ? 'Open application' : record.channel === 'email' ? 'Review email failure' : 'Review application',
+        label: record.tabId ? 'Open application' : record.channel === 'email' ? 'Review email' : 'Review application',
       });
     }
   }
@@ -111,4 +118,37 @@ export function monitoringScope(monitor, searches = []) {
 
 export function errorRecovery(kind) {
   return ({verification: 'Open the website, complete verification, then retry the check.', login: 'Open the website, sign in, then retry the check.', permission: 'Review website access, save the monitor to grant access, then retry.', selector: 'Open the website and review its availability rule before retrying.', navigation: 'Open the affected tab and return to the saved floor-plan page, then retry.', loading: 'Open the website to confirm it loads, then retry the check.'})[kind] || 'Open the affected tab to inspect the page, then retry. Copy diagnostics if it fails again.';
+}
+
+/** Summarize a search without presenting historical matches as confirmed results. */
+export function searchOverview(search, monitors, now = Date.now()) {
+  if (search.error) return {kind: 'failed', label: 'Search needs review', detail: 'Open status for recovery'};
+  const entries = search.locationIds.map(id => ({
+    monitor: monitors.find(monitor => monitor.id === id), result: search.results?.[id],
+  }));
+  const statuses = entries.map(({monitor, result}) => resultStatus(monitor, result || null, now));
+  const matches = entries.reduce((total, {result}) =>
+    total + (result?.matches.filter(listing => listing.matched).length || 0), 0);
+  const failed = entries.find(({monitor}) => monitor?.error);
+  const historical = statuses.some(status => status.historical);
+  let label = matches ? `${matches} ${matches === 1 ? 'match' : 'matches'}` : 'No matches';
+  if (historical && matches) label = `${matches} last known ${matches === 1 ? 'match' : 'matches'}`;
+  if (failed) return {kind: 'failed', label: locationIssue(failed.monitor.errorKind).label, detail: matches ? label : 'Availability unknown'};
+  if (statuses.some(status => status.kind === 'checking')) return {kind: 'checking', label: 'Checking locations', detail: matches ? label : 'Availability unconfirmed'};
+  if (statuses.some(status => status.kind === 'unchecked')) return {kind: 'unchecked', label: 'Waiting for first check', detail: matches ? label : ''};
+  if (historical) return {kind: 'outdated', label: 'Results outdated', detail: matches ? label : 'Check again to confirm availability'};
+  const oldest = Math.min(...entries.map(({result}) => result.at));
+  return {kind: 'current', label, detail: freshness({lastCheckedAt: oldest}, now).text};
+}
+
+/** Recovery labels describe the next action; no commands are executed here. */
+export function locationIssue(kind) {
+  return ({
+    verification: {label: 'Verification required', action: 'Open website'},
+    login: {label: 'Sign-in required', action: 'Open website'},
+    permission: {label: 'Website access required', action: 'Review access'},
+    selector: {label: 'Availability rule needs review', action: 'Review location'},
+    loading: {label: 'Listings not loaded', action: 'Check again'},
+    navigation: {label: 'Listing page needs reopening', action: 'Open website'},
+  })[kind] || {label: 'Check failed', action: 'Check again'};
 }

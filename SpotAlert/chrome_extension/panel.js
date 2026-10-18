@@ -1,3 +1,4 @@
+import {SUPPORTED_SITES} from "./sites/index.js";
 import {createNavigation} from "./panel-navigation.js";
 import {createApplicationView} from "./panel-application.js";
 import {element} from "./panel-dom.js";
@@ -10,7 +11,7 @@ import {APPLICATION_BUILD, applicationReport} from "./application-diagnostics.js
 import {STORAGE_KEY, siteError, listingKey, safeListingUrl, sitePattern, validateMonitor} from "./core.js";
 
 import {UI_KEY, freshness, availabilityTotals, cleanError, resultStatus, monitoringScope, errorRecovery} from "./ui.js";
-import {PROFILE_KEY, PROFILES_KEY, PROFILE_FIELDS, profileCompleteness, requiredProfileFields, generateRegistrationPassword} from "./profile.js";
+import {PROFILE_KEY, PROFILES_KEY, PROFILE_FIELDS, profileReadinessForSite, validateProfile, generateRegistrationPassword} from "./profile.js";
 
 const $ = (selector) => document.querySelector(selector);
 const {switchTab, hasVisited} = createNavigation($);
@@ -42,6 +43,7 @@ function downloadDiagnostics() {
 let loadingState = false;
 let reloadState = false;
 let personalProfile = {};
+let readinessLocationId = SUPPORTED_SITES[0].id;
 let applicantLibrary = {profiles: []};
 let compactView = false;
 let checkBuildingIds = new Set();
@@ -277,7 +279,7 @@ function renderDetail() {
   }));
   const options = element("details", {class: "monitor-options"}, element("summary", {}, "Options"));
   options.open = Boolean(optionsOpen);
-  options.append(element("div", {class: "monitor-options-content"}, element("label", {class: "refresh-control"}, "Refresh every", refresh), element("button", {id: "configure-monitor", class: "small-button", onclick: () => { options.open = false; openEditor(monitor); }}, "Configure monitor")));
+  options.append(element("div", {class: "monitor-options-content"}, element("label", {class: "refresh-control"}, "Check every", refresh), element("button", {id: "configure-monitor", class: "small-button", onclick: () => { options.open = false; openEditor(monitor); }}, "Configure monitor")));
   options.addEventListener("keydown", event => { if (event.key === "Escape") { options.open = false; options.querySelector("summary").focus(); } });
   toolbar.append(element("div", {class: "building-secondary-actions"}, element("button", {class: "text-button detail-url", title: monitor.url, onclick: guard(() => request({type: "open", id: monitor.id}))}, "Open website ↗"), options));
   if (monitor.application?.message) {
@@ -566,12 +568,15 @@ function updateProfilePresentation() {
   const name = $("#profile-name").value.trim();
   $("#profile-avatar").textContent = name.split(/\s+/).map(word => word[0]).slice(0, 2).join("").toUpperCase() || "＋";
   const draft = readProfile();
-  const required = new Set(requiredProfileFields(draft));
+  const site = SUPPORTED_SITES.find(site => site.id === readinessLocationId) || SUPPORTED_SITES[0];
+  const requirements = profileReadinessForSite(draft, site);
+  const required = new Set(requirements.fields);
+  const missingFields = new Set(requirements.missingFields.map(field => field.key));
   for (const group of document.querySelectorAll(".profile-group")) {
     const requiredKeys = group.dataset.fields.split(",").filter(key => required.has(key));
-    const missing = requiredKeys.filter(key => !readProfileField(key).trim()).length;
+    const missing = requiredKeys.filter(key => missingFields.has(key)).length;
     const marker = group.querySelector(".profile-section-count");
-    marker.textContent = missing ? `${missing} missing` : requiredKeys.length ? "" : "Optional";
+    marker.textContent = missing ? `${missing} needed` : requiredKeys.length ? "" : "Optional";
     marker.hidden = !marker.textContent;
   }
   for (const wrapper of document.querySelectorAll("[data-profile-field]")) {
@@ -591,7 +596,7 @@ $("#profile-name").addEventListener("invalid", () => { $("#profile-rename").open
 $("#saved-profile").addEventListener("change", guard(async () => {
   if (personalDirty) {
     $("#saved-profile").value = $("#saved-profile").dataset.activeId;
-    toast("Save your changes before loading another profile.", true);
+    toast("Save your changes before switching applicants.", true);
     return;
   }
   await request({type: "select-profile", id: $("#saved-profile").value});
@@ -599,13 +604,19 @@ $("#saved-profile").addEventListener("change", guard(async () => {
   $("#profile-rename").open = false;
 }));
 $("#new-profile").addEventListener("click", guard(async () => {
-  if (personalDirty) { toast("Save your changes before creating a profile.", true); return; }
+  if (personalDirty) { toast("Save your changes before creating an applicant.", true); return; }
   await request({type: "create-profile"});
   await loadState();
   $("#profile-rename").open = true;
   $("#profile-name").focus(); $("#profile-name").select();
 }));
-$("#personal-form").addEventListener("input", event => { if (event.target.id === "personal-noMiddleName" && event.target.checked) $("#personal-middleName").value = ""; if (!["saved-profile", "signature-consent"].includes(event.target.id)) personalDirty = true; updateProfilePresentation(); });
+$("#personal-form").addEventListener("input", event => {
+  const id = event.target.id;
+  if (id === "profile-readiness-location") return;
+  if (id === "personal-noMiddleName" && event.target.checked) $("#personal-middleName").value = "";
+  if (!["saved-profile", "signature-consent"].includes(id)) personalDirty = true;
+  updateProfilePresentation();
+});
 $("#generate-registration-details").addEventListener("click", () => {
   const details = {registrationPassword: generateRegistrationPassword()};
   for (const [key, value] of Object.entries(details)) {
@@ -631,7 +642,7 @@ $("#personal-form").addEventListener("submit", async event => {
     personalDirty = false;
     $("#personal-error").hidden = true;
     await loadState();
-    toast("Profile saved.");
+    toast("Applicant saved.");
   } catch (error) {
     $("#personal-error").textContent = error.message;
     $("#personal-error").hidden = false;
@@ -642,7 +653,7 @@ $("#clear-personal").addEventListener("click", guard(async () => {
   personalDirty = false;
   await loadState();
   $("#personal-error").hidden = true;
-  toast("Profile deleted.");
+  toast("Applicant deleted.");
 }));
 $("#stop-all").addEventListener("click", guard(async () => {
   $("#stop-all").disabled = true;
@@ -675,13 +686,13 @@ function readProfile() {
 function focusProfileField(key) {
   const input = $(`#personal-${key}`);
   if (!input) return;
-  const group = input.closest("details");
-  if (group) group.open = true;
+  for (let group = input.closest("details"); group; group = group.parentElement.closest("details")) group.open = true;
   input.scrollIntoView({block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth"});
   input.focus({preventScroll: true});
 }
 async function openProfile(id, key = null) {
   if (personalDirty && id !== applicantLibrary.activeId) throw new Error("Save your profile changes before loading another profile.");
+  document.querySelector("dialog[open]")?.close();
   if (id !== applicantLibrary.activeId) {
     await request({type: "select-profile", id});
     await loadState();
@@ -698,24 +709,34 @@ narrowWorkspace.addEventListener("change", adaptLocationOverview);
 adaptLocationOverview();
 $("#location-picker").addEventListener("change", event => selectLocation(event.target.value));
 function renderClientOverview() {
-  const list = $("#client-overview-list");
-  const expanded = list.querySelector("details")?.open || false;
+  const list = $('#client-overview-list');
+  const expanded = list.querySelector('details')?.open || false;
   const focusedKey = list.contains(document.activeElement) ? document.activeElement.dataset.field : null;
+  const pickerFocused = document.activeElement?.id === 'profile-readiness-location';
   const draft = readProfile();
-  const readiness = profileCompleteness(draft);
-  const status = readiness.ready ? "Ready to apply" : Object.values(draft).some(value => value && value !== "No") ? "Missing details" : "Awaiting information";
-  const card = element("div", {class: "profile-readiness"});
-  if (readiness.ready) {
-    card.append(element("span", {id: "application-readiness", role: "status"}, "Ready to apply"));
-    list.replaceChildren(card);
-    return;
-  }
-  const details = element("details", {class: "missing-profile-fields"}, element("summary", {}, element("span", {id: "application-readiness", role: "status"}, status), !readiness.ready && ` · ${readiness.missingFields.length}`));
+  const site = SUPPORTED_SITES.find(site => site.id === readinessLocationId) || SUPPORTED_SITES[0];
+  const readiness = profileReadinessForSite(draft, site);
+  let searchLabel = 'Ready to search';
+  try {
+    validateProfile(Object.fromEntries(['maxRent', 'minSize', 'preferredApartmentType', 'moveInFrom'].map(key => [key, draft[key]])));
+  } catch { searchLabel = 'Review search preferences'; }
+  const picker = element('select', {id: 'profile-readiness-location', 'aria-label': 'Application requirements for location'},
+    ...SUPPORTED_SITES.map(location => element('option', {value: location.id}, location.name)));
+  picker.value = site.id;
+  picker.addEventListener('change', () => { readinessLocationId = picker.value; updateProfilePresentation(); });
+  const card = element('div', {class: 'profile-readiness'},
+    element('strong', {class: 'profile-search-readiness'}, searchLabel),
+    element('label', {class: 'profile-readiness-picker'}, 'Application details for', picker));
+  const status = readiness.ready ? 'Known details complete' : `${readiness.missingFields.length} ${readiness.missingFields.length === 1 ? 'detail' : 'details'} needed`;
+  const details = element('details', {class: 'missing-profile-fields'},
+    element('summary', {}, element('span', {id: 'application-readiness', role: 'status'}, status)));
   details.open = expanded;
-  if (!readiness.missingFields.length) details.append(element("p", {class: "helper"}, "Website requirements may vary."));
-  else details.append(element("div", {class: "missing-field-links"}, ...readiness.missingFields.map(({key, label}) => element("button", {type: "button", class: "text-button", "data-field": key, onclick: () => focusProfileField(key)}, `${label} →`))));
+  if (readiness.ready) details.append(element('p', {class: 'helper'}, 'Live forms may request additional details. Agreements and final submission remain manual.'));
+  else details.append(element('div', {class: 'missing-field-links'}, ...readiness.missingFields.map(({key, label}) =>
+    element('button', {type: 'button', class: 'text-button', 'data-field': key, onclick: () => focusProfileField(key)}, `${label} →`))));
   card.append(details);
   list.replaceChildren(card);
+  if (pickerFocused) picker.focus({preventScroll: true});
   if (focusedKey) list.querySelector(`[data-field="${focusedKey}"]`)?.focus({preventScroll: true});
 }
 

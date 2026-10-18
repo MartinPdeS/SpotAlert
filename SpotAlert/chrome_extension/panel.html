@@ -27,8 +27,7 @@
       <p class="helper scope-explainer">Choose an applicant and websites; SpotAlert checks for apartments that match their saved preferences.</p>
       <div class="search-toolbar">
         <label class="profile-filter">Applicant<select id="search-profile-filter"><option value="">All applicants</option></select></label>
-        <div class="search-summary" aria-label="Search summary"><button type="button" class="search-filter active" data-search-filter="all"><strong id="search-total">0</strong> searches</button><button type="button" class="search-filter" data-search-filter="active"><strong id="search-active-total">0</strong> running</button><button type="button" class="search-filter" data-search-filter="matches"><strong id="search-match-total">0</strong> matches</button><button type="button" class="search-filter" data-search-filter="attention"><strong id="search-review-total">0</strong> attention</button></div>
-        <button id="show-attention" class="attention-metric" type="button" aria-expanded="false" aria-controls="attention-panel" hidden>Needs attention <strong id="attention-total">0</strong></button>
+        <div class="search-summary" aria-label="Search summary"><button type="button" class="search-filter active" data-search-filter="all"><strong id="search-total">0</strong> searches</button><button type="button" class="search-filter" data-search-filter="active"><strong id="search-active-total">0</strong> running</button><button type="button" class="search-filter" data-search-filter="matches"><strong id="search-match-total">0</strong> matches</button><button id="show-attention" type="button" class="search-filter" data-search-filter="attention" aria-expanded="false" aria-controls="attention-panel"><strong id="search-review-total">0</strong> attention</button></div>
       </div>
       <section id="attention-panel" class="attention-panel" aria-labelledby="attention-heading" hidden>
         <header class="section-heading"><h3 id="attention-heading">Needs attention</h3><button id="close-attention" class="text-button" type="button">Close</button></header>
@@ -37,7 +36,7 @@
       <div id="search-list" class="search-list"></div>
     </section>
     <div id="monitoring-view" role="tabpanel" aria-labelledby="monitoring-tab" hidden>
-    <header class="location-heading"><h2>Websites</h2><div class="building-check-group"><span id="building-selection-count" class="building-selection-count"></span><div class="building-check-actions"><button id="monitor-selected-buildings" class="secondary-button" type="button">Start monitoring</button><button id="check-all-buildings" class="primary-button" type="button" title="Check every building once without starting recurring monitoring">Check now</button><button id="cancel-all-checks" class="text-button" type="button" hidden>Cancel checks</button></div><p id="building-check-progress" class="helper" role="status" hidden></p></div></header>
+    <header class="location-heading"><div><h2>Websites</h2><p class="helper">Check location availability. Applicant searches handle matching and actions.</p></div><div class="building-check-group"><span id="building-selection-count" class="building-selection-count"></span><div class="building-check-actions"><button id="monitor-selected-buildings" class="secondary-button" type="button">Start monitoring</button><button id="check-all-buildings" class="primary-button" type="button" title="Check every building once without starting recurring monitoring">Check now</button><button id="cancel-all-checks" class="text-button" type="button" hidden>Cancel checks</button></div><p id="building-check-progress" class="helper" role="status" hidden></p></div></header>
     <details id="mobile-check-selection" class="mobile-check-selection"><summary id="mobile-check-selection-summary">Buildings to check</summary><div id="mobile-check-options"></div></details>
     <label class="mobile-location-picker">Location<select id="location-picker" aria-label="Choose location"></select></label>
     <div class="workspace">
@@ -60,7 +59,7 @@
     </details>
     </div>
     <section id="settings-view" role="tabpanel" aria-labelledby="settings-tab" hidden>
-      <div class="settings-heading"><h2>Settings</h2></div>
+      <div class="settings-heading"><h2>Settings</h2></div><p class="helper scope-explainer">Email delivery and extension maintenance.</p>
       <section class="settings-email" aria-labelledby="email-delivery-title">
         <h3 id="email-delivery-title">Email delivery</h3>
         <p class="helper">Used for search alerts and client questionnaires.</p>
@@ -80,7 +79,7 @@
       <section class="settings-maintenance" aria-labelledby="maintenance-title"><div><h3 id="maintenance-title">Extension</h3><p class="helper">After updating SpotAlert, reload the extension and reopen this dashboard.</p></div><button id="reload-extension" class="secondary-button" type="button" aria-label="Reload extension" title="Reload SpotAlert, then reopen the dashboard">Reload extension</button></section>
       <details id="advanced-settings" class="advanced-settings"><summary>Advanced</summary>
         <p class="helper">Diagnostics, local storage, and rule exports.</p>
-        <section aria-label="Error diagnostics"><h4>Error diagnostics</h4><p class="helper">Build, check times, failure categories, application steps, and recent dashboard errors. Profiles, email settings, and page contents are excluded. Review error text before sharing.</p><div class="control-row"><button id="copy-diagnostics" class="secondary-button" type="button">Copy diagnostics</button><button id="download-diagnostics" class="text-button" type="button">Download report</button></div></section>
+        <section aria-label="Error diagnostics"><h4>Error diagnostics</h4><p class="helper">Build, check times, failure categories, application steps, and recent dashboard errors. Applicant details, email settings, and page contents are excluded. Review error text before sharing.</p><div class="control-row"><button id="copy-diagnostics" class="secondary-button" type="button">Copy diagnostics</button><button id="download-diagnostics" class="text-button" type="button">Download report</button></div></section>
     <p id="extension-version" class="helper" role="status"></p>
       <section class="profile-folder"><div><strong>Local profile folder</strong><p id="profile-folder-status" class="helper">Keep a JSON copy alongside SpotAlert.</p></div><button type="button" id="enable-profile-folder" class="secondary-button">Use local folder</button><button type="button" id="open-profile-folder" class="secondary-button" hidden>See profile folder ↗</button></section>
         <details class="debug-section"><summary>Debug capture <span id="debug-count" class="count">0</span></summary>
@@ -94,34 +93,34 @@
       </details>
     </section>
     <section id="clients-view" role="tabpanel" aria-labelledby="clients-tab" hidden>
-      <div class="personal-heading"><h2>Clients</h2></div>
+      <div class="personal-heading"><h2>Clients</h2></div><p class="helper scope-explainer">Request details, then review a reply before creating an applicant.</p>
       <div class="client-grid">
         <section class="client-card"><h3>Request details</h3><p class="helper">Email a questionnaire or copy it to share.</p>
           <label>Client name<input id="client-name" maxlength="80" placeholder="Alex"></label><label>Client email<input id="client-email" type="email" placeholder="alex@example.com"></label><label>Replies go to<input id="client-reply-to" type="email" placeholder="Your email address"></label>
           <details class="client-preview"><summary>Preview questionnaire</summary><pre id="client-questionnaire"></pre></details>
           <div class="control-row"><button id="copy-client-questionnaire" class="secondary-button">Copy questionnaire</button><button id="send-client-questionnaire" class="primary-button">Send email</button></div><p id="client-send-status" class="helper" role="status"></p>
         </section>
-        <section class="client-card"><h3>Import a reply</h3><p class="helper">Paste the completed questionnaire, then review and save.</p><label>New profile name<input id="client-profile-name" maxlength="80" placeholder="Alex Example"></label><label>Completed reply<textarea id="client-reply" rows="12" maxlength="30000" placeholder="Paste the SPOTALERT DETAILS block here…"></textarea></label><button id="review-client-reply" class="secondary-button">Review answers</button><div id="client-import-preview" hidden></div><button id="import-client-profile" class="primary-button" hidden>Create profile</button><p id="client-import-status" class="helper" role="status"></p>
+        <section class="client-card"><h3>Import a reply</h3><p class="helper">Paste the completed questionnaire, then review and save.</p><label>Applicant name<input id="client-profile-name" maxlength="80" placeholder="Alex Example"></label><label>Completed reply<textarea id="client-reply" rows="12" maxlength="30000" placeholder="Paste the SPOTALERT DETAILS block here…"></textarea></label><button id="review-client-reply" class="secondary-button">Review answers</button><div id="client-import-preview" hidden></div><button id="import-client-profile" class="primary-button" hidden>Create applicant</button><p id="client-import-status" class="helper" role="status"></p>
         </section>
       </div>
     </section>
     <section id="personal-view" role="tabpanel" aria-labelledby="personal-tab" hidden>
-      <div class="personal-heading"><h2>Applicants</h2></div>
+      <div class="personal-heading"><h2>Applicants</h2></div><p class="helper scope-explainer">Preferences and details used by this applicant’s searches and applications.</p>
     <form id="personal-form" class="personal-form">
       <section class="profile-unified-header" aria-label="Applicant profile">
         <div class="profile-avatar" id="profile-avatar" aria-hidden="true">ME</div>
         <div class="profile-header-fields">
-          <div class="profile-picker"><label>Applicant<select id="saved-profile"></select></label><button type="button" id="new-profile" class="secondary-button">＋ New profile</button></div>
-          <details id="profile-rename" class="profile-rename"><summary>Rename profile</summary><label class="profile-name-label">Profile name<input id="profile-name" maxlength="80" required placeholder="e.g. Alex"></label></details>
+          <div class="profile-picker"><label>Applicant<select id="saved-profile"></select></label><button type="button" id="new-profile" class="secondary-button">＋ New applicant</button></div>
+          <details id="profile-rename" class="profile-rename"><summary>Rename applicant</summary><label class="profile-name-label">Applicant name<input id="profile-name" maxlength="80" required placeholder="e.g. Alex"></label></details>
           <span id="test-profile-badge" class="test-profile-badge" hidden>Test profile · fictional details</span>
         </div>
         <section class="client-overview" aria-label="Profile readiness"><div id="client-overview-list"></div></section>
       </section>
-      <p id="profile-field-note" class="helper profile-field-note">* Required for applications. Save now and complete the rest later.</p>
+      <p id="profile-field-note" class="helper profile-field-note">Start with preferences and contact details. * marks known fields for the selected location; live forms may ask for more.</p>
       <div id="profile-sections"></div>
-      <details class="profile-tools"><summary>Profile actions</summary><p class="helper">Generate two fictional applicants with realistic Dutch names, addresses, work history, and housing preferences. Replaces only the two test profiles; other applicants are preserved. Email addresses use example.com.</p><div class="control-row"><button type="button" id="generate-registration-details" class="secondary-button">Generate password</button><button type="button" id="create-test-profiles" class="secondary-button">Generate two realistic test profiles</button><button type="button" id="clear-personal" class="danger-button">Delete profile</button></div></details>
+      <details class="profile-tools"><summary>Applicant actions</summary><p class="helper">Create two fictional applicants for local tests. Other applicants are preserved; test emails use example.com.</p><div class="control-row"><button type="button" id="generate-registration-details" class="secondary-button">Generate password</button><button type="button" id="create-test-profiles" class="secondary-button">Create test applicants</button><button type="button" id="clear-personal" class="danger-button">Delete applicant</button></div></details>
       <p id="personal-error" class="form-error" role="alert" hidden></p>
-      <footer class="profile-action-bar"><div><strong id="profile-save-status" role="status">All changes saved</strong></div><div class="profile-bottom-buttons"><button type="submit" class="primary-button">Save profile</button></div></footer>
+      <footer class="profile-action-bar"><div><strong id="profile-save-status" role="status">All changes saved</strong></div><div class="profile-bottom-buttons"><button type="submit" class="primary-button">Save applicant</button></div></footer>
     </form>
     </section>
   </main>
@@ -133,16 +132,18 @@
     <form id="start-search-form">
       <h2 id="start-search-title">Start profile search</h2>
       <p id="start-search-description" class="helper"></p>
+      <p id="start-search-summary" class="start-search-summary"></p>
+      <details id="start-search-options"><summary>Change options</summary>
       <div class="search-start-toggles">
-        <label class="explicit-toggle"><span class="toggle-copy"><strong>Auto-apply</strong><small id="start-auto-apply-description">Fill applications with this profile. Final submission stays manual.</small></span><span class="toggle-control"><input id="start-auto-apply" type="checkbox" role="switch" aria-describedby="start-auto-apply-description" aria-label="Auto-apply"  ><span class="toggle-state" aria-hidden="true"><span class="state-on">On</span><span class="state-off">Off</span></span></span></label>
-        <label class="explicit-toggle"><span class="toggle-copy"><strong>Email notifications</strong><small id="start-email-description">Send matching apartment details to the profile holder.</small></span><span class="toggle-control"><input id="start-email" type="checkbox" role="switch" aria-describedby="start-email-description" aria-label="Email notifications"  ><span class="toggle-state" aria-hidden="true"><span class="state-on">On</span><span class="state-off">Off</span></span></span></label>
+        <label class="explicit-toggle"><span class="toggle-copy"><strong>Fill applications automatically</strong><small id="start-auto-apply-description">Fill applications with this profile. Final submission stays manual.</small></span><span class="toggle-control"><input id="start-auto-apply" type="checkbox" role="switch" aria-describedby="start-auto-apply-description" aria-label="Fill applications automatically"  ><span class="toggle-state" aria-hidden="true"><span class="state-on">On</span><span class="state-off">Off</span></span></span></label>
+        <label class="explicit-toggle"><span class="toggle-copy"><strong>Email matches</strong><small id="start-email-description">Send matching apartment details to the profile holder.</small></span><span class="toggle-control"><input id="start-email" type="checkbox" role="switch" aria-describedby="start-email-description" aria-label="Email matches"  ><span class="toggle-state" aria-hidden="true"><span class="state-on">On</span><span class="state-off">Off</span></span></span></label>
         <input id="start-sms" type="checkbox" disabled hidden>
       </div>
       <div id="start-account-options" hidden><label class="explicit-toggle"><span class="toggle-copy"><strong>Create an account if needed</strong><small id="start-create-account-description">Uses the saved password and accepts the website’s account terms.</small></span><span class="toggle-control"><input id="start-create-account" type="checkbox" role="switch" aria-describedby="start-create-account-description" aria-label="Create an account if needed"  ><span class="toggle-state" aria-hidden="true"><span class="state-on">On</span><span class="state-off">Off</span></span></span></label></div>
-      <label>Refresh every<select id="start-search-interval"><option value="5">5 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option></select></label>
-      <p class="helper">Shared locations use the fastest interval requested by active searches or general monitoring.</p>
+      <label>Check every<select id="start-search-interval"><option value="5">5 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option></select></label>
+      </details>
       <section id="start-search-readiness" class="search-preflight" aria-label="Readiness checks" aria-live="polite"></section>
-      <p class="helper">Auto-apply stops when your input is needed. Review agreements, payments and final submission on the website.</p>
+      <p class="helper">Application assistance stops for verification, agreements, payment, and final submission. Review these on the website.</p>
       <p id="start-search-error" class="form-error" role="alert" hidden></p>
       <footer class="choice-dialog-footer"><button id="cancel-start-search" type="button" class="secondary-button">Cancel</button><button id="confirm-start-search" type="submit" class="primary-button" disabled>Checking…</button></footer>
     </form>
@@ -162,27 +163,28 @@
       <div class="search-editor-heading"><h2 id="search-editor-title">Create a search</h2><p>Choose an applicant, locations and actions.</p></div>
       <input id="search-id" type="hidden">
       <section class="search-editor-section"><h3><span>01</span> Applicant</h3><label>Search name<input id="search-name" required maxlength="80" placeholder="e.g. Alex · Amsterdam studios"></label>
-      <label>Applicant profile<select id="search-profile" required></select></label>
+      <label>Applicant<select id="search-profile" required></select></label>
+      <label>Check every<select id="search-edit-interval"><option value="5">5 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option></select></label>
       <p id="search-recipient" class="search-recipient" aria-live="polite"></p></section>
       <fieldset class="search-editor-section"><legend><span>02</span> Locations</legend><p class="helper">Choose one or more locations.</p><div id="search-locations"></div></fieldset>
       <section class="search-editor-section"><h3><span>03</span> Applicant preferences</h3>
-        <p class="helper">Read from the selected profile. Edit in Applicants; changes apply to its searches automatically.</p>
+        <p class="helper">Saved in Applicants. Changes affect all searches for this applicant.</p>
         <dl id="search-profile-preferences" class="search-criteria"></dl>
       </section>
       <fieldset class="search-editor-section"><legend><span>04</span> Actions on match</legend>
-        <p class="helper">Choose one action or combine both. Other options are available after the essentials.</p>
-        <label class="explicit-toggle"><span class="toggle-copy"><strong>Email the profile holder</strong><small id="search-email-description">Send apartment details to the email saved in this profile.</small></span><span class="toggle-control"><input id="search-email" type="checkbox" role="switch" aria-describedby="search-email-description" aria-label="Email the profile holder" checked ><span class="toggle-state" aria-hidden="true"><span class="state-on">On</span><span class="state-off">Off</span></span></span></label>
-        <label class="explicit-toggle"><span class="toggle-copy"><strong>Auto-apply using this profile</strong><small id="search-auto-apply-description">Open and fill the application, then stop for review.</small></span><span class="toggle-control"><input id="search-auto-apply" type="checkbox" role="switch" aria-describedby="search-auto-apply-description" aria-label="Auto-apply using this profile"  ><span class="toggle-state" aria-hidden="true"><span class="state-on">On</span><span class="state-off">Off</span></span></span></label>
-        <details class="search-advanced"><summary>Advanced actions &amp; safeguards</summary><label class="explicit-toggle unavailable"><span class="toggle-copy"><strong>SMS notifications</strong><small id="search-sms-description">Unavailable — no SMS delivery provider is configured.</small></span><span class="toggle-control"><input id="search-sms" type="checkbox" role="switch" aria-describedby="search-sms-description" aria-label="SMS notifications" disabled><span class="toggle-state" aria-hidden="true"><span class="state-on">On</span><span class="state-off">Off</span></span></span></label>
-        <p class="helper">Auto-apply fills known fields then stops for verification, payment, agreements, and final submission.</p>
+        <p class="helper">Choose email, application assistance, or both.</p>
+        <label class="explicit-toggle"><span class="toggle-copy"><strong>Email matches</strong><small id="search-email-description">Send apartment details to the email saved in this profile.</small></span><span class="toggle-control"><input id="search-email" type="checkbox" role="switch" aria-describedby="search-email-description" aria-label="Email matches" checked ><span class="toggle-state" aria-hidden="true"><span class="state-on">On</span><span class="state-off">Off</span></span></span></label>
+        <label class="explicit-toggle"><span class="toggle-copy"><strong>Fill applications automatically</strong><small id="search-auto-apply-description">Open and fill the application, then stop for review.</small></span><span class="toggle-control"><input id="search-auto-apply" type="checkbox" role="switch" aria-describedby="search-auto-apply-description" aria-label="Fill applications automatically"  ><span class="toggle-state" aria-hidden="true"><span class="state-on">On</span><span class="state-off">Off</span></span></span></label>
+        <details class="search-advanced"><summary>Advanced options</summary><label class="explicit-toggle unavailable"><span class="toggle-copy"><strong>SMS notifications</strong><small id="search-sms-description">Unavailable — no SMS delivery provider is configured.</small></span><span class="toggle-control"><input id="search-sms" type="checkbox" role="switch" aria-describedby="search-sms-description" aria-label="SMS notifications" disabled><span class="toggle-state" aria-hidden="true"><span class="state-on">On</span><span class="state-off">Off</span></span></span></label>
+        <p class="helper">Application assistance stops for verification, agreements, payment, and final submission.</p>
         <div id="search-account-options" hidden><label class="explicit-toggle"><span class="toggle-copy"><strong>Create an account if needed</strong><small id="search-create-account-description">Use the profile’s saved password. Account terms are accepted.</small></span><span class="toggle-control"><input id="search-create-account" type="checkbox" role="switch" aria-describedby="search-create-account-description" aria-label="Create an account if needed"><span class="toggle-state" aria-hidden="true"><span class="state-on">On</span><span class="state-off">Off</span></span></span></label></div></details>
       </fieldset>
-      <details class="search-behavior-note"><summary>How matches and duplicate prevention work</summary><p class="helper">Each profile receives at most one email and one automatic application per listing and location, including across overlapping searches. Failed or interrupted actions require manual review. Locations share checks using the schedule in Websites.</p></details>
+      <details class="search-behavior-note"><summary>Duplicate protection</summary><p class="helper">Each profile receives at most one email and one automatic application per listing and location, including across overlapping searches. Failed or interrupted actions require manual review. Locations share checks using the schedule in Websites.</p></details>
       <p id="search-error" class="form-error" role="alert" hidden></p>
       <footer class="search-editor-footer"><p>Saved searches start paused.<br><span>You choose when to start.</span></p><div class="editor-actions"><button id="cancel-search" type="button" class="secondary-button">Cancel</button><button type="submit" class="primary-button">Save search</button></div></footer>
     </form>
   </dialog>
-  <dialog id="apply-confirmation" aria-labelledby="apply-confirmation-title"><h2 id="apply-confirmation-title">Review application</h2><p class="helper">Choose a profile for this application and review the apartment before filling starts.</p><label>Apply with profile<select id="apply-profile" required></select></label><dl id="apply-confirmation-details" class="client-answer-list"></dl><p id="apply-confirmation-note" class="helper"></p><label class="checkbox-label"><input id="apply-create-account" type="checkbox" checked>Create an account if needed, using this profile’s details and password</label><p class="helper">Creating an account agrees to the website’s account Terms and Privacy Policy. Marketing subscriptions remain unchecked.</p><section id="apply-agreements" class="apply-agreements" hidden><label class="checkbox-label"><strong>Include Canvas agreements &amp; signature</strong><input type="checkbox" id="signature-consent" role="switch"></label><p class="helper">Checks both agreements and selects Signature Type 1. Includes confirmation of your information, screening after fees, Privacy Policy, data processing and an EDR credit check. Review the website’s terms before enabling.</p></section><div class="editor-actions"><button id="cancel-apply" class="secondary-button">Cancel</button><button id="confirm-apply" class="primary-button">Confirm and apply</button></div></dialog>
+  <dialog id="apply-confirmation" aria-labelledby="apply-confirmation-title"><h2 id="apply-confirmation-title">Review application</h2><p class="helper">Choose an applicant and review the apartment before filling starts.</p><label>Applicant<select id="apply-profile" required></select></label><dl id="apply-confirmation-details" class="client-answer-list"></dl><p id="apply-confirmation-note" class="helper"></p><label class="checkbox-label"><input id="apply-create-account" type="checkbox" checked>Create an account if needed, using this profile’s details and password</label><p class="helper">Creating an account agrees to the website’s account Terms and Privacy Policy. Marketing subscriptions remain unchecked.</p><section id="apply-agreements" class="apply-agreements" hidden><label class="checkbox-label"><strong>Include Canvas agreements &amp; signature</strong><input type="checkbox" id="signature-consent" role="switch"></label><p class="helper">Checks both agreements and selects Signature Type 1. Includes confirmation of your information, screening after fees, Privacy Policy, data processing and an EDR credit check. Review the website’s terms before enabling.</p></section><div class="editor-actions"><button id="cancel-apply" class="secondary-button">Cancel</button><button id="confirm-apply" class="primary-button">Confirm and apply</button></div></dialog>
   <dialog id="editor" aria-labelledby="editor-title">
     <form id="monitor-form">
       <div class="section-heading"><div><h2 id="editor-title">New monitor</h2></div><button type="button" id="close-editor" class="icon-button" aria-label="Close editor">×</button></div>

@@ -62,6 +62,20 @@ claim or restores the previous claim for an explicitly authorized repeat.
 Applications use `application-state.js` stages and stop for user review at
 sensitive or unfamiliar steps; an attempt is not a final submission.
 
+## Workspace presentation
+
+Search cards use `searchOverview()` in `ui.js` for current, pending, failed, and
+historical outcomes. Preserve the distinction between a recurring search being
+Running and its results being current. Scheduling details live in the results
+dialog; the Start dialog summarizes saved options and hides optional changes.
+Starting still requires the existing engine readiness and generation checks.
+
+`profileReadinessForSite()` in `profile.js` reads a site's declared required and
+review fields without making optional bank or identification details mandatory.
+Applicant sections, missing-field links, and the attention list reuse these
+requirements. Selecting a readiness location is presentation state, not a draft
+edit or an assignment of that applicant to a website.
+
 ## Styles
 
 `panel.css` is the dashboard's single stylesheet. Shared color, type, spacing, and

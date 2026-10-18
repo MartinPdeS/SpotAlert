@@ -233,3 +233,19 @@ export function fillApplicationForm(profile, site = null) {
   }
   return {count, fields: [...filled]};
 }
+
+/** Known requirements come from the selected site's capabilities, not a global form. */
+export function profileReadinessForSite(profile, site) {
+  const config = site.application.readiness;
+  const fields = [...new Set([...(config?.requiredFields || []), ...(config?.reviewFields || []),
+    ...(config?.middleNameChoice && profile.noMiddleName !== 'Yes' ? ['middleName'] : [])])];
+  const labels = Object.fromEntries(PROFILE_SECTIONS.flatMap(section => section.fields.map(([key, label]) => [key, label])));
+  const missingFields = fields.filter(key => {
+    const text = String(profile[key] ?? '').trim();
+    if (!text) return true;
+    if (key === 'email') return !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
+    if (key === 'phone') return !/^[+()\d.\s-]+$/.test(text) || text.replace(/\D/g, '').length < 7 || text.replace(/\D/g, '').length > 15;
+    return false;
+  }).map(key => ({key, label: labels[key]}));
+  return {ready: !missingFields.length, fields, missingFields};
+}

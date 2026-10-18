@@ -11,7 +11,7 @@ export function createApplicationView({$, element, guard, request, toast, getLib
     $("#apply-agreements").hidden = !siteForUrl(monitor.url)?.application.agreementSignature;
     pendingApplication = null;
     const picker = $("#apply-profile");
-    picker.replaceChildren(element("option", {value: ""}, "Choose a profile…"), ...getLibrary().profiles.map(entry => element("option", {value: entry.id}, entry.name)));
+    picker.replaceChildren(element("option", {value: ""}, "Choose an applicant…"), ...getLibrary().profiles.map(entry => element("option", {value: entry.id}, entry.name)));
     picker.value = "";
     updateApplyConfirmation();
     $("#apply-confirmation").showModal();
@@ -26,7 +26,7 @@ export function createApplicationView({$, element, guard, request, toast, getLib
     const {monitor, sample} = applicationChoice;
     for (const [label, detail] of [["Location", monitor.name], ["Apartment", sample.name || sample.context || "Selected apartment"], ["Rent", sample.rent || "Not published"]]) list.append(element("dt", {}, label), element("dd", {}, detail));
     if (!applicant) {
-      $("#apply-confirmation-note").textContent = "Choose the profile to use for this application.";
+      $("#apply-confirmation-note").textContent = "Choose the applicant for this application.";
       return;
     }
     if (isPersonalDirty() && applicant.id === getLibrary().activeId) {

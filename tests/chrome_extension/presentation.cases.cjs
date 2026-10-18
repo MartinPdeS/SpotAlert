@@ -51,7 +51,7 @@ test('attention tasks point to recoverable actions and retire superseded failure
   let items = attentionItems(state, {profiles: [profile]});
   assert.equal(items.filter(item => item.action === 'profile').length, 1, 'Overlapping searches share one missing-profile task');
   assert.ok(items.some(item => item.action === 'location' && item.monitorId === 'diemen'));
-  assert.ok(items.some(item => item.label === 'Review email failure' && item.section === 'search-activity'));
+  assert.ok(items.some(item => item.label === 'Review email' && item.section === 'search-activity'));
   const sent = {...failed, id: 'sent', at: 2, status: 'sent'};
   search.activity.unshift(sent);
   state.searchClaims[searchClaimKey(profile.id, 'diemen', 'studio', 'email')] = sent;
@@ -110,3 +110,35 @@ test('application debug reports exclude profile values, passwords and URL querie
   assert.ok(!/secret|private/.test(encoded));
 });
 
+
+test('compact search outcomes distinguish current, historical, failed and pending matches', async () => {
+  const {searchOverview} = await import('../../SpotAlert/chrome_extension/ui.js');
+  const now = 1000000;
+  const monitor = {id: 'location', phase: 'waiting', intervalSeconds: 5};
+  const search = {locationIds: ['location'], results: {location: {at: now - 1000, matches: [{matched: true}]}}};
+  assert.deepEqual(searchOverview(search, [monitor], now), {kind: 'current', label: '1 match', detail: 'Checked 1s ago'});
+  assert.equal(searchOverview({...search, results: {}}, [monitor], now).label, 'Waiting for first check');
+  assert.equal(searchOverview({...search, error: 'Applicant deleted'}, [monitor], now).label, 'Search needs review');
+  const historical = searchOverview(search, [monitor], now + 70000);
+  assert.equal(historical.kind, 'outdated');
+  assert.match(historical.detail, /last known/);
+  const failed = searchOverview(search, [{...monitor, error: 'Verification', errorKind: 'verification'}], now);
+  assert.equal(failed.label, 'Verification required');
+  assert.match(failed.detail, /last known/);
+  const checking = searchOverview(search, [{...monitor, phase: 'reading'}], now);
+  assert.equal(checking.kind, 'checking');
+  assert.match(checking.detail, /last known/);
+  assert.equal(searchOverview({...search, results: {location: {at: now, matches: []}}}, [monitor], now).label, 'No matches');
+});
+
+test('applicant readiness uses selected site requirements without making optional data mandatory', async () => {
+  const {profileReadinessForSite} = await import('../../SpotAlert/chrome_extension/profile.js');
+  const {SUPPORTED_SITES} = await import('../../SpotAlert/chrome_extension/sites/index.js');
+  const profile = {firstName: 'Alex', lastName: 'Example', email: 'alex@example.com', phone: '+31612345678', dateOfBirth: '1995-01-01', address: 'Fixture street', postalCode: '1234 AB', city: 'Fixture city'};
+  assert.equal(profileReadinessForSite(profile, SUPPORTED_SITES[0]).ready, true);
+  const canvas = profileReadinessForSite(profile, SUPPORTED_SITES.find(site => site.id === 'canvas-rotterdam-blaak'));
+  assert.ok(canvas.missingFields.some(field => field.key === 'nationality'));
+  assert.ok(!canvas.fields.includes('iban'));
+  assert.ok(profileReadinessForSite({...profile, email: 'invalid'}, SUPPORTED_SITES[0]).missingFields.some(field => field.key === 'email'));
+  assert.ok(!profileReadinessForSite({...profile, noMiddleName: 'Yes'}, SUPPORTED_SITES.find(site => site.id === 'canvas-rotterdam-blaak')).fields.includes('middleName'));
+});

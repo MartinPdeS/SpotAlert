@@ -3,19 +3,23 @@ import {element} from "./panel-dom.js";
 
 /** Construct applicant fields once; the panel owns drafts and saved state. */
 export function mountProfileFields($) {
-  const orderedSections = [...PROFILE_SECTIONS].sort((a, b) => {
-    const order = ["Identity & contact", "Moving preferences", "Account password"];
-    return (order.indexOf(a.title) < 0 ? 99 : order.indexOf(a.title)) - (order.indexOf(b.title) < 0 ? 99 : order.indexOf(b.title));
-  });
+  const identity = PROFILE_SECTIONS.find(section => section.title === 'Identity & contact');
+  const contactKeys = ['firstName', 'lastName', 'email', 'phone'];
+  const orderedSections = [
+    PROFILE_SECTIONS.find(section => section.title === 'Moving preferences'),
+    {title: 'Contact details', fields: contactKeys.map(key => identity.fields.find(([field]) => field === key))},
+    {title: 'Identity details', fields: identity.fields.filter(([key]) => !contactKeys.includes(key))},
+    ...PROFILE_SECTIONS.filter(section => !['Moving preferences', 'Identity & contact'].includes(section.title)),
+  ];
   for (const section of orderedSections) {
     const details = element("details", {class: "profile-group"});
-    details.open = section.title === "Identity & contact";
+    details.open = ['Moving preferences', 'Contact details'].includes(section.title);
     details.dataset.fields = section.fields.map(([key]) => key).join(",");
     details.append(element("summary", {}, element("span", {class: "profile-section-title"}, section.title), element("span", {class: "profile-section-count"})));
     if (section.helper) details.append(element("p", {class: "helper"}, section.helper));
     const grid = element("div", {class: "profile-fields"});
     const identityOrder = ["firstName", "lastName", "middleName", "noMiddleName", "dateOfBirth", "email", "phone", "nationality", "countryOfResidence", "title", "preferredName", "contactMethod"];
-    const fields = section.title === "Identity & contact" ? [...section.fields].sort(([a], [b]) => identityOrder.indexOf(a) - identityOrder.indexOf(b)) : section.fields;
+    const fields = section.title === "Identity details" ? [...section.fields].sort(([a], [b]) => identityOrder.indexOf(a) - identityOrder.indexOf(b)) : section.fields;
     for (const [key, label, type] of fields) {
       const wrapper = element("label", {"data-profile-field": key}, element("span", {class: "field-label"}, label, element("small", {class: "field-requirement"})));
       const checkbox = key === "noMiddleName";
@@ -36,7 +40,7 @@ export function mountProfileFields($) {
       } else wrapper.append(input);
       grid.append(wrapper);
     }
-    if (section.title === "Identity & contact") {
+    if (section.title === "Identity details") {
       const middle = grid.querySelector('[data-profile-field="middleName"]');
       const checkbox = grid.querySelector('[data-profile-field="noMiddleName"]');
       const group = element("div", {class: "middle-name-field"});

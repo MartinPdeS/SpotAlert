@@ -25,6 +25,7 @@ def main():
         page.locator('#create-test-profiles').click()
         expect(page.locator('#test-profile-badge')).to_be_visible()
         expect(page.locator('#saved-profile option')).to_have_count(3)
+        page.locator('#personal-noMiddleName').evaluate('node=>node.closest("details").open=true')
         for width in [320, 768, 1280]:
             page.set_viewport_size({'width': width, 'height': 900})
             for checked in [True, False]:
@@ -45,16 +46,23 @@ def main():
         birth = page.locator('#personal-dateOfBirth').input_value()
         page.locator('#generate-registration-details').click()
         expect(page.locator('#personal-dateOfBirth')).to_have_value(birth)
-        page.get_by_role('button', name='Save profile', exact=True).click()
+        page.get_by_role('button', name='Save applicant', exact=True).click()
         expect(page.locator('#profile-save-status')).to_have_text('All changes saved')
         page.locator('#saved-profile').select_option('default')
         expect(page.locator('#test-profile-badge')).not_to_be_visible()
+        page.locator('#profile-readiness-location').select_option('canvas-rotterdam-blaak')
+        page.locator('#personal-noMiddleName').evaluate('node=>node.closest("details").open=true')
+        expect(page.locator('#profile-save-status')).to_have_text('All changes saved')
         page.locator('#personal-firstName').fill('Actual')
+        page.get_by_role('tab', name='Settings', exact=True).click()
+        page.get_by_role('tab', name='Applicants', exact=True).click()
+        expect(page.locator('#personal-firstName')).to_have_value('Actual')
+        expect(page.locator('#profile-save-status')).to_have_text('Unsaved changes')
         page.locator('#personal-middleName').fill('Middle')
         page.locator('#personal-noMiddleName').check()
         expect(page.locator('#personal-middleName')).not_to_be_visible()
         assert page.locator('#personal-middleName').input_value() == ''
-        page.get_by_role('button', name='Save profile', exact=True).click()
+        page.get_by_role('button', name='Save applicant', exact=True).click()
         expect(page.locator('#profile-save-status')).to_have_text('All changes saved')
         page.locator('.missing-profile-fields summary').click()
         page.locator('.missing-field-links').get_by_role('button', name='Nationality →', exact=True).click()
@@ -66,7 +74,7 @@ def main():
         expect(employer).not_to_be_visible()
         page.locator('#personal-employmentStatus').select_option('Employed')
         expect(employer).to_be_visible()
-        page.get_by_role('button', name='Save profile', exact=True).click()
+        page.get_by_role('button', name='Save applicant', exact=True).click()
         page.locator('#personal-emergencyName').evaluate('(node)=>{node.closest("details").open=true;node.scrollIntoView()}')
         box = page.locator('.profile-action-bar').bounding_box()
         assert box['y'] >= 0 and box['y'] + box['height'] <= 901, box
@@ -83,15 +91,28 @@ def main():
         }''')
         page.get_by_role('tab', name='My searches', exact=True).click()
         expect(page.locator('.search-card')).to_have_count(2)
+        expect(page.locator('.search-card .search-progress')).to_have_count(0)
+        expect(page.locator('.search-card .search-interval')).to_have_count(0)
+        expect(page.locator('.search-card').first.locator('.search-outcome')).to_contain_text('1 match')
         expect(page.locator('.search-card .search-results')).to_have_count(0)
         expect(page.locator('.search-card .test-profile-badge')).to_have_count(1)
+        page.locator('#searches-tab').focus()
+        page.keyboard.press('End')
+        expect(page.locator('#settings-tab')).to_be_focused()
+        page.keyboard.press('Home')
+        expect(page.locator('#searches-tab')).to_be_focused()
+        page.keyboard.press('ArrowRight')
+        expect(page.locator('#monitoring-tab')).to_be_focused()
+        page.keyboard.press('ArrowLeft')
+        expect(page.locator('#searches-tab')).to_be_focused()
         page.locator('#show-attention').click()
+        expect(page.locator('.search-card')).to_have_count(2)
         expect(page.locator('#attention-list')).to_contain_text('Sender needs configuration')
-        page.locator('#attention-list').get_by_role('button', name='Complete profile', exact=True).click()
+        page.locator('#attention-list').get_by_role('button', name='Complete details', exact=True).click()
         expect(page.locator('#personal-view')).to_be_visible()
-        expect(page.locator('#personal-title')).to_be_focused()
+        expect(page.locator('#personal-lastName')).to_be_focused()
         page.get_by_role('tab', name='My searches', exact=True).click()
-        page.locator('#attention-list').get_by_role('button', name='Review email failure', exact=True).click()
+        page.locator('#attention-list').get_by_role('button', name='Review email', exact=True).click()
         expect(page.locator('#search-detail-dialog')).to_be_visible()
         expect(page.locator('.search-activity')).to_have_attribute('open', '')
         page.locator('#close-search-detail').click()
@@ -156,6 +177,30 @@ def main():
         page.screenshot(path=str(ARTIFACTS / 'clean-profiles-mobile.png'))
         page.get_by_role('tab', name='Websites', exact=True).click()
         page.screenshot(path=str(ARTIFACTS / 'clean-locations-mobile.png'))
+        page.get_by_role('tab', name='My searches', exact=True).click()
+        page.locator('[data-search-filter="all"]').click()
+        page.locator('#search-profile-filter').select_option('spotalert-test-profile-2')
+        expect(page.locator('.search-empty')).to_contain_text('No searches match these filters')
+        expect(page.locator('#new-search')).to_be_enabled()
+        page.locator('#search-profile-filter').select_option('')
+        page.evaluate("""async () => {
+          const key='spotalert.monitors.v2'; const state=(await chrome.storage.local.get(key))[key];
+          state.searches[0].name='LongApartmentSearch'.repeat(4);
+          state.monitors[0].phase='reading';
+          await chrome.storage.local.set({[key]:state});
+        }""")
+        long_card = page.locator('.search-card').filter(has_text='LongApartmentSearch')
+        expect(long_card.locator('.search-outcome')).to_contain_text('Checking locations')
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Long search names overflow'
+        long_card.locator('.view-search-results').focus()
+        page.evaluate("""async () => {
+          const key='spotalert.monitors.v2'; const state=(await chrome.storage.local.get(key))[key];
+          state.monitors[0].phase='paused';
+          state.searches[0].results[state.monitors[0].id].at=Date.now();
+          await chrome.storage.local.set({[key]:state});
+        }""")
+        expect(long_card.locator('.view-search-results')).to_have_text('View matches')
+        expect(long_card.locator('.view-search-results')).to_be_focused()
         page.get_by_role('tab', name='Websites', exact=True).click()
         page.evaluate("""async () => {
           const key='spotalert.monitors.v2'; const state=(await chrome.storage.local.get(key))[key];

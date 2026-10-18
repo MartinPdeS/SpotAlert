@@ -63,24 +63,27 @@ Failed, pending, and outdated checks are distinct from a successful check with n
 matches. Previous results remain visible with an unconfirmed label. Error panels
 explain the impact, give recovery steps, and offer **Retry check**.
 
-Searches opens first. Each row shows the applicant, configured criteria, match
-count, and Start/Pause. Edit and Delete are in the row’s **•••** menu. Open the
-match count or **Details** for apartments, location status, exclusions, delivery
-history, and duplicate protection. Each apartment has separate **View apartment**
-and **Apply** actions.
+**My searches** opens first. Cards show applicant preferences and one outcome;
+**View matches** opens apartments, location status, exclusions, and activity.
+Each apartment has separate **View apartment** and **Apply** actions.
 
-Click **Needs attention** to see specific recovery tasks: complete an applicant
-profile, open an application, review a location, or inspect a failed email and
-its settings. Successful subsequent attempts replace older failure notices.
+Select the **attention** filter for recovery tasks. Verification and sign-in tasks
+open the affected website; other issues offer a retry or location review.
+Successful subsequent attempts replace older failure notices.
 
-Profiles combine the applicant selector, name, and readiness in one header.
+Applicants combine the applicant selector, name, and readiness in one header.
+Moving preferences and Contact details come first; additional application
+sections start collapsed. Choose a location under **Application details for** to
+see its known missing fields and required markers. Changing that selector does
+not edit the applicant. Unsaved drafts survive tab changes; save before switching
+applicants.
 Missing required details link directly to the matching field; optional fields
 sit in collapsible sections. Required fields use an asterisk. The no-middle-name checkbox hides and clears the middle
 name; employment details hide when the applicant is retired or never employed.
-Partial profiles can be saved, and the Save profile bar stays visible while
+Partial profiles can be saved, and the Save applicant bar stays visible while
 scrolling. Fictional applicants carry a **Test profile** badge.
 
-Locations keeps its overview collapsed and puts the interval and monitor
+Websites keeps its overview collapsed and puts the interval and monitor
 configuration under **Options**. Display settings and totals sit below the results. Narrow windows use a location dropdown. Debug captures, build information, rule exports, and the
 optional local profile helper are under **Settings → Advanced**.
 
@@ -150,7 +153,7 @@ Click **Apply** on an apartment, choose a profile, and confirm. For Canvas, the 
 Open **Applicants** to save your first and last name,
 email, phone, street address, postal code, and city. These details stay in
 Chrome local extension storage, separate from monitor history and rule exports.
-**Delete saved details** clears them. An application readiness badge checks that first name, last name, valid email, and phone are saved; address fields remain optional. Additional application requirements still need review.
+**Delete applicant** clears them. An application readiness badge checks that first name, last name, valid email, and phone are saved; address fields remain optional. Additional application requirements still need review.
 
 Profiles include identity and contact details, moving preferences,
 current housing, employment and income, emergency contacts, education, application
@@ -359,8 +362,8 @@ Local profile storage is an optional macOS/Linux helper. See [setup, storage for
 
 ### Two realistic fictional test profiles
 
-In **Applicants → Profile actions**, click
-**Generate two realistic test profiles**. This adds two clearly named fictional
+In **Applicants → Applicant actions**, click
+**Create test applicants**. This adds two clearly named fictional
 applicants and selects the first one. Both have generated passwords, birth dates, and different housing
 preferences. Their emails use `example.com`; identification and bank fields
 stay empty. Use them with synthetic forms, rather than real applications or email delivery.
@@ -370,7 +373,7 @@ preferences are coherent fictional examples.
 **Generate password** changes only the password of the selected profile; it leaves
 birth dates and other identity details untouched.
 
-Apply asks you to choose a saved profile for each application. Moving preferences include a maximum published monthly rent, minimum size in square metres, apartment type, and earliest move-in date. These preferences filter profile-search results; unknown rent/size does not pass a configured limit. Rent ranges use the highest published amount. Apply confirms the applicant, apartment, rent and move-in preference before filling, then reports the date selected from the actual website calendar. Profiles show only the selected profile’s readiness and missing details, without listing locations. Each search shows its application and email history, with explicit authorization required for another attempt. Email Sent means the provider accepted the request, not that the recipient read it.
+Apply asks you to choose a saved profile for each application. Moving preferences include a maximum published monthly rent, minimum size in square metres, apartment type, and earliest move-in date. These preferences filter profile-search results; unknown rent/size does not pass a configured limit. Rent ranges use the highest published amount. Apply confirms the applicant, apartment, rent and move-in preference before filling, then reports the date selected from the actual website calendar. Applicants distinguish **Ready to search** from application readiness for the selected location; known missing fields link to their inputs. Live website requirements can still differ. Each search shows its application and email history, with explicit authorization required for another attempt. Email Sent means the provider accepted the request, not that the recipient read it.
 
 Apply confirmation includes Create an account if needed. When enabled, the supported registration form is filled and Create My Account is clicked once after required details pass validation. Existing-email errors stop the flow and direct you to log in. Verification, application agreements, charges and final submission remain manual. Account creation accepts the website account Terms and Privacy Policy; marketing subscriptions are left untouched.
 
@@ -393,31 +396,35 @@ Application operations hold a per-tab lock across asynchronous work; duplicate p
 ### Profile-oriented searches
 
 Open **My searches** and choose **New search**. Select a saved applicant profile,
-choose locations, and select **Email the profile holder**, **Auto-apply**, or both.
+choose locations, and select **Email matches**, **Fill applications automatically**, or both.
 Budget, minimum size, apartment type and move-in date are read directly from the
 profile and displayed as a read-only summary. Edit them once in **Applicants**; all searches for that profile use the updated values. Existing
 copied search overrides are retired without changing the saved profile.
-Saving creates or updates a paused search. **Start search** opens an action dialog
-with separate auto-apply, email and SMS switches. Each switch has an explicit On/Off
-label, a distinct thumb position and an enabled checkmark. Choose the actions and
-confirm to begin; cancelling leaves the search paused. SMS is visibly unavailable
-until an SMS provider is added. **Pause search** stops that search without
-interrupting other profiles.
+Saving creates or updates a paused search. Configure **Email matches**, **Fill
+applications automatically**, and **Check every** in the search editor.
+**Start search** shows the saved actions and interval in a compact summary, then
+checks readiness. Expand **Change options** only when you want to adjust them for
+this start. The switches retain explicit On/Off labels and a checkmark. Account
+creation remains a separate opt-in, and verification, agreements, payment, and
+final submission remain manual. Cancelling leaves the search paused. SMS remains
+unavailable in the editor’s **Advanced options**.
 
-Locations share one page read across active searches. When starting a search,
-choose its refresh interval; new searches default to **5 seconds**. A shared
+Locations share one page read across active searches. New searches default to
+**5 seconds**. A shared
 location uses the fastest interval requested by its active searches or general
 monitoring. Search matching uses the location’s availability rule and its
 assigned profile’s current preferences, independently of location filters and
 the currently selected dashboard profile. Monitoring hours and error backoff
 remain configured in **Websites**.
 
-Each search card shows its effective interval, next-check countdown, and a
-compact check/match/action timeline. Use its **Check now**, refresh selector,
-or Start/Pause controls without opening the details view. Location-health
-indicators in search details identify healthy, delayed, checking, or
-attention-needed locations; select one to open that location and its recovery
-guidance.
+Each search card shows its name, applicant preferences, and one outcome:
+confirmed matches, no matches, checking, a stale result, or a specific check
+problem. Historical counts are labeled **last known**; they do not establish
+current availability. **View matches** or **View status** opens results and
+activity. **Pause** is directly available; **Check now**, **Edit search**, and
+**Delete search** are in **•••**. Interval controls, the next-check countdown,
+location scope, and the latest action appear under **Search settings & checks**
+in the results dialog. Location-health indicators open the affected location.
 Standalone location watches continue checking without sending notifications.
 A location started by searches pauses when its last search pauses; a location
 that was already being watched independently continues checking. **Stop all**

@@ -1,6 +1,7 @@
 """Verify location filters, monitoring schedules, profile editing and recovery in Chromium."""
 
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -204,9 +205,9 @@ def main():
                 panel.locator(".profile-group").filter(has_text="Current housing").locator("summary").click()
                 for field, value in {"firstName": "Alex", "lastName": "Example", "email": "alex@example.com", "phone": "+31612345678", "address": "Example street 1", "postalCode": "1234 AB", "city": "Amsterdam"}.items():
                     panel.locator(f"#personal-{field}").fill(value)
-                panel.get_by_role("button", name="Save profile", exact=True).click()
+                panel.get_by_role("button", name="Save applicant", exact=True).click()
                 expect(panel.locator("#personal-view")).to_be_visible()
-                expect(panel.locator("#application-readiness")).to_have_text("Missing details")
+                expect(panel.locator("#application-readiness")).to_have_text("1 detail needed")
                 panel.get_by_role("tab", name="Applicants", exact=True).click()
                 panel.locator("#personal-firstName").fill("Unsaved name")
                 worker.evaluate("async () => { const key = 'spotalert.ui.v1'; await chrome.storage.local.set({[key]: {compact: true}}); }")
@@ -271,9 +272,9 @@ def main():
                 expect(panel.locator("#personal-firstName")).to_have_value("Alex")
                 expect(panel.locator("#personal-email")).to_have_value("alex@example.com")
                 panel.locator(".profile-tools > summary").click()
-                panel.get_by_role("button", name="Delete profile", exact=True).click()
+                panel.get_by_role("button", name="Delete applicant", exact=True).click()
                 expect(panel.locator("#personal-firstName")).to_have_value("")
-                expect(panel.locator("#application-readiness")).to_have_text("Awaiting information")
+                expect(panel.locator("#application-readiness")).to_have_text(re.compile(r"\d+ details? needed"))
                 panel.get_by_role("tab", name="Websites", exact=True).click()
                 panel.get_by_role("tab", name="Applicants", exact=True).click()
                 expect(panel.locator("#personal-email")).to_have_value("")
