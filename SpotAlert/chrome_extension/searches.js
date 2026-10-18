@@ -2,6 +2,7 @@ import {SUPPORTED_SITES} from "./core.js";
 import {PROFILE_SECTIONS, validateProfile} from "./profile.js";
 import {applicationReadiness} from "./ui.js";
 
+/** @returns {import("./contracts.js").SearchConfig} */
 export function validateSearch(input, profiles) {
   const profile = profiles.find(item => item.id === input.profileId);
   if (!profile) throw new Error("Choose a saved profile.");
@@ -9,13 +10,17 @@ export function validateSearch(input, profiles) {
   if (!locationIds.length || locationIds.some(id => !SUPPORTED_SITES.some(site => site.id === id))) throw new Error("Choose at least one supported location.");
   const name = String(input.name || '').trim();
   if (!name || name.length > 80) throw new Error("Enter a search name of up to 80 characters.");
+  const intervalSeconds = Number(input.intervalSeconds ?? 5);
+  if (!Number.isFinite(intervalSeconds) || intervalSeconds < 5 || intervalSeconds > 86400) {
+    throw new Error("Choose a refresh interval between 5 seconds and 24 hours.");
+  }
   const actions = {email: input.actions?.email === true, autoApply: input.actions?.autoApply === true, sms: input.actions?.sms === true};
   if (actions.sms) throw new Error("SMS is unavailable: no SMS provider is configured. Choose email or auto-apply.");
   if (!actions.email && !actions.autoApply) throw new Error("Choose email, auto-apply, or both.");
   if (actions.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profile.details.email || '')) throw new Error("Save a valid email address in this profile first.");
   validateProfile(profile.details);
   if (actions.autoApply && !applicationReadiness(profile.details).ready) throw new Error("Complete this profile’s required contact details before enabling auto-apply.");
-  return {name, profileId: profile.id, locationIds, actions, createAccount: input.createAccount === true};
+  return {name, profileId: profile.id, locationIds, intervalSeconds, actions, createAccount: input.createAccount === true};
 }
 
 export const searchClaimKey = (profileId, monitorId, listingId, channel) => JSON.stringify([profileId, monitorId, listingId, channel]);

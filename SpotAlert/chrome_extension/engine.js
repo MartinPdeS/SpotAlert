@@ -1,3 +1,8 @@
+import {createApplicationContext} from "./application-context.js";
+import {createEngineStore} from "./engine-store.js";
+import {recoverEngineState} from "./engine-recovery.js";
+import {createDebugCapture} from "./debug-capture.js";
+import {BUILD_SENSITIVE_COMMANDS, validateCommand} from "./contracts.js";
 import {readBackground, BACKGROUND_RETRY_MS} from './background-reader.js';
 import {createTestProfile} from "./test-profiles.js";
 import {createProfileStore} from "./profile-store.js";
@@ -7,17 +12,15 @@ import {createSearchActions} from "./search-actions.js";
 import {validateSearch} from "./searches.js";
 import {siteForUrl, readerForRule, pageConfig} from './sites/index.js';
 import {clientQuestionnaire, parseClientReply} from "./clients.js";
-import {ALARM_PREFIX, STORAGE_KEY, defaultMonitor, evaluateRule, sitePattern, siteError, errorKind, listingKey, safeListingUrl, samePage, inMonitoringHours, nextMonitoringTime, retrySeconds, SUPPORTED_SITES, validateSupportedMonitor, validateMonitor} from "./core.js";
+import {ALARM_PREFIX, evaluateRule, sitePattern, siteError, errorKind, safeListingUrl, samePage, inMonitoringHours, nextMonitoringTime, retrySeconds, SUPPORTED_SITES, validateSupportedMonitor, validateMonitor} from "./core.js";
 import {PROFILE_KEY, PROFILES_KEY, validateProfile, fillApplicationForm, selectMoveInDate} from "./profile.js";
 import {prepareCanvasSignature} from "./application.js";
 import {APPLICATION_BUILD} from "./application-diagnostics.js";
-import {inspectApplicationPage} from "./debug.js";
 import {EMAIL_KEY, sendEmailAlert} from "./email.js";
 import {readPage, inspectReadState} from "./page.js";
 
 /** Coordinate persisted monitor state, browser reads, and optional profile storage. */
 export function createEngine(api, now = () => Date.now(), timers = globalThis) {
-  let writes = Promise.resolve();
   let checks = Promise.resolve();
   let batchCheck = null;
   const running = new Map();
@@ -25,70 +28,20 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
   const applications = new Map();
   const applicationTabs = new Set();
   const preparationControllers = new Map();
-  function claimApplicationTab(tabId) {
-    if (applicationTabs.has(tabId)) throw new Error('An application action is already running in this tab. Wait for it to finish or stop it first.');
-    applicationTabs.add(tabId);
-  }
-  async function withApplicationTab(tabId, task) {
-    claimApplicationTab(tabId);
-    const controller = new AbortController();
-    preparationControllers.set(tabId, controller);
-    try { return await task(controller.signal); }
-    catch (error) { error.tabId = tabId; throw error; }
-    finally { applicationTabs.delete(tabId); preparationControllers.delete(tabId); }
-  }
-  async function currentApplicationTab(monitorId, requireSignature = false) {
-        const isApplicant = tab => {
-          try {
-            const url = new URL(tab?.url);
-            const site = siteForUrl(url.href);
-            if (!site) return false;
-            const applicant = url.pathname.toLowerCase().endsWith('/' + site.application.paths.applicant);
-            return requireSignature ? applicant && !!site.application.agreementSignature && url.searchParams.get('stepname')?.toLowerCase() === site.application.agreementSignature.step : applicant || url.pathname.toLowerCase().endsWith('/' + site.application.paths.booking);
-          } catch { return false; }
-        };
-        const [active] = await api.tabs.query({active: true, currentWindow: true});
-        let tab = isApplicant(active) ? active : null;
-        const monitor = (await state()).monitors.find(item => item.id === monitorId);
-        if (!tab && monitor?.application?.tabId) {
-          try { tab = await api.tabs.get(monitor.application.tabId); } catch { /* Closed application: use the open page below. */ }
-        }
-        if (!tab) {
-          const candidates = (await api.tabs.query({currentWindow: true, url: SUPPORTED_SITES.filter(site => !requireSignature || site.application.agreementSignature).map(site => sitePattern(site.url))})).filter(isApplicant);
-          candidates.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-          if (candidates.length > 1 && (!candidates[0].lastAccessed || candidates[0].lastAccessed === candidates[1].lastAccessed)) throw new Error('Open the application you want to use, then return to SpotAlert and retry.');
-          tab = candidates[0];
-        }
-        if (!tab) throw new Error(requireSignature ? 'Open your Canvas applicant information page, then return to SpotAlert and retry.' : 'Open a supported housing application form, then return to SpotAlert and retry.');
-    return tab;
-  }
-
   const deliveryRetries = new Set();
   const cancel = (id) => { running.get(id)?.abort(); running.delete(id); };
-  async function state() {
-    await writes;
-    return (await api.storage.local.get(STORAGE_KEY))[STORAGE_KEY] || {version: 2, monitors: []};
-  }
-  function mutate(update) {
-    const operation = writes.then(async () => {
-      const value = (await api.storage.local.get(STORAGE_KEY))[STORAGE_KEY] || {version: 2, monitors: []};
-      const result = await update(value);
-      await api.storage.local.set({[STORAGE_KEY]: value});
-      const active = value.monitors.filter((monitor) => monitor.enabled).length;
-      const available = value.monitors.filter((monitor) => monitor.available === true).length;
-      await api.action.setBadgeBackgroundColor({color: available ? "#72deb6" : "#49685c"});
-      await api.action.setBadgeText({text: available ? String(available) : active ? String(active) : ""});
-      await api.action.setTitle({title: `SpotAlert · ${active} watching · ${available} available`});
-      return result;
-    });
-    writes = operation.catch(() => {});
-    return operation;
-  }
+  const {state, mutate} = createEngineStore(api);
+  const {claimApplicationTab, withApplicationTab, currentApplicationTab} = createApplicationContext({
+    api, state, applicationTabs, preparationControllers,
+  });
   const find = (value, id) => {
     const monitor = value.monitors.find((item) => item.id === id);
     if (!monitor) throw new Error("This monitor no longer exists.");
     return monitor;
   };
+  const {captureApplications} = createDebugCapture({
+    api, now, state, mutate, find, patchRun, waitForPage, debugRuns,
+  });
   function history(monitor, event) {
     monitor.history.unshift({id: crypto.randomUUID(), at: now(), ...event});
     monitor.history = monitor.history.slice(0, 80);
@@ -99,9 +52,16 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     api, now, state, mutate, find, applications, preparationControllers,
     applicationTabs, claimApplicationTab, waitForPage, profileLibrary, assignedProfile,
   });
+  async function reschedule(id) {
+    clearFastTimer(id);
+    cancel(id);
+    await api.alarms.clear(alarmName(id));
+    const monitor = (await state()).monitors.find(item => item.id === id);
+    if (monitor?.enabled) await schedule(id, now() + monitor.intervalSeconds * 1000);
+  }
   const {reconcileSearchLocations, readinessFor, repeatSearchAction, matchSearches} = createSearchActions({
     api, now, state, mutate, find, history, profileLibrary, check,
-    clearFastTimer, cancel, alarmName, applications, runApplication,
+    clearFastTimer, cancel, alarmName, applications, runApplication, reschedule,
   });
 
   async function assignedProfile(monitor) {
@@ -112,66 +72,10 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     return entry;
   }
   async function initialize() {
-    await mutate((value) => {
-      if (value.checkBatch?.status === 'running') Object.assign(value.checkBatch, {status: 'interrupted', currentId: null, finishedAt: now()});
-      value.searches ||= [];
-      // Profile preferences are authoritative; retire copied search overrides.
-      for (const search of value.searches) delete search.preferences;
-      value.alertPreferences = {notify: false, popup: false, desktop: false, sound: false};
-      value.searchClaims ||= {};
-      for (const search of value.searches) for (const item of search.activity || []) {
-        if (["queued", "running"].includes(item.status)) { item.status = "interrupted"; item.message = "Worker restarted. Review the application tab before taking further action."; }
-      }
-      for (const [key, claim] of Object.entries(value.searchClaims)) {
-        if (typeof claim === 'string') {
-          const owner = value.searches.find(search => search.activity?.some(item => item.id === claim));
-          const action = owner?.activity.find(item => item.id === claim);
-          value.searchClaims[key] = action ? {...action, searchId: owner.id} : {id: claim, status: 'recorded', at: null, message: 'Previous action recorded; detailed history is no longer available.'};
-        }
-        if (['queued', 'running'].includes(value.searchClaims[key].status)) Object.assign(value.searchClaims[key], {status: 'interrupted', message: 'Chrome restarted. Check the prior application or delivery before authorizing another attempt.'});
-      }
-      value.debug ||= {enabled: false, captures: [], seen: {}};
-      for (const capture of value.debug.captures || []) if (capture.status === "opening") { capture.status = "error"; capture.error = "Chrome restarted before capture completed."; }
-      const previous = value.monitors || [];
-      for (const monitor of previous) if (monitor.application?.status === "running") Object.assign(monitor.application, {status: "stopped", stage: "failed", kind: "interrupted", message: "The extension background worker restarted during this application. Open the application tab to check its progress.", updatedAt: now(), trace: [...(monitor.application.trace || []), {at: now(), event: "background-restarted"}].slice(-80)});
-      value.alertPreferences ||= {notify: previous.length ? previous.some(m => m.notify) : true, sound: previous.some(m => m.sound)};
-      value.alertPreferences.popup ??= value.alertPreferences.notify;
-      value.alertPreferences.desktop ??= value.alertPreferences.notify;
-      value.monitors = SUPPORTED_SITES.map((site) => {
-        const existing = previous.find((monitor) => monitor.id === site.id && monitor.url === site.url)
-          || previous.find((monitor) => monitor.url === site.url);
-        const monitor = existing ? {...defaultMonitor(site.id), ...existing, ...validateMonitor(existing), id: site.id, name: site.name} : defaultMonitor(site.id);
-        // Migrate only known shipped rules, preserving user-defined rules.
-        const migration = existing && site.ruleMigrations?.find(item => Object.entries(item.from).every(([key, value]) => existing.rule[key] === value));
-        if (migration) {
-          monitor.rule = {...site.rule};
-          monitor.available = null;
-          monitor.samples = [];
-          monitor.error = null;
-          monitor.lastCheckedAt = null;
-          monitor.lastDurationMs = null;
-          history(monitor, {kind: "updated", message: migration.message});
-        }
-        delete monitor.profileId;
-        monitor.snoozedUntil = null;
-        monitor.alert = null;
-        monitor.pendingArrivals = [];
-        Object.assign(monitor, value.alertPreferences);
-        return monitor;
-      });
-      const retained = new Set(value.monitors.map((monitor) => monitor.id));
-      const archived = previous.filter((monitor) => !retained.has(monitor.id) || !SUPPORTED_SITES.some((site) => site.url === monitor.url));
-      value.archivedMonitors = [...(value.archivedMonitors || []), ...archived.map((monitor) => ({...monitor, enabled: false, phase: "paused", nextCheckAt: null}))];
-      value.initialized = true;
-      for (const monitor of value.monitors) {
-        if (["queued", "refreshing", "reading", "capturing"].includes(monitor.phase)) {
-          monitor.phase = monitor.enabled ? "waiting" : "paused";
-          history(monitor, {kind: "interrupted", message: "Chrome restarted the worker; the interrupted check will retry."});
-        }
-      }
-    });
+    await mutate(value => recoverEngineState(value, now, history));
     const savedLibrary = (await api.storage.local.get(PROFILES_KEY))[PROFILES_KEY];
     if (savedLibrary) await mutate(value => refreshSearchProfiles(value, savedLibrary));
+    await reconcileSearchLocations();
     const value = await state();
     const alarms = await api.alarms.getAll();
     for (const alarm of alarms.filter((item) => item.name.startsWith(ALARM_PREFIX))) {
@@ -210,6 +114,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       const existing = find(value, site.id);
       const monitor = {
         ...existing, ...config,
+        generalIntervalSeconds: config.intervalSeconds,
         enabled: false, phase: "paused", available: null, samples: [], error: null, errorKind: null, consecutiveErrors: 0,
         pendingArrivals: [], alert: null, backgroundRetryAt: null, readFallbackReason: null, readMethod: null,
         nextCheckAt: null, tabId: existing?.url === config.url ? existing.tabId : null,
@@ -324,13 +229,10 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     await mutate((value) => {
       const monitor = find(value, id);
       const config = validateMonitor({...monitor, intervalSeconds: seconds});
-      monitor.intervalSeconds = config.intervalSeconds;
+      monitor.generalIntervalSeconds = config.intervalSeconds;
       history(monitor, {kind: "interval", message: `Refresh interval set to ${config.intervalSeconds} seconds.`});
-      if (monitor.enabled && !running.has(id)) {
-        monitor.nextCheckAt = nextMonitoringTime(now() + retrySeconds(monitor) * 1000, monitor.hours);
-        return arm(monitor, monitor.nextCheckAt);
-      }
     });
+    await reconcileSearchLocations();
     return state();
   }
   async function patchRun(id, generation, update) {
@@ -570,67 +472,10 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
     } catch { /* Recreate only if the affected tab no longer exists. */ }
     return open(id);
   }
-  async function captureApplications(id, generation, signal) {
-    // Claim before opening, so repeated five-second checks cannot reopen a link.
-    const work = await mutate(value => {
-      const monitor = find(value, id);
-      const debug = value.debug;
-      if (!debug?.enabled || monitor.generation !== generation || signal.aborted) return [];
-      const links = monitor.samples.filter(sample => sample.matched && sample.applicationUrl && !samePage(sample.applicationUrl, monitor.url));
-      const keys = new Set(links.map(sample => `${id}:${listingKey(sample)}:${sample.applicationUrl}`));
-      for (const key of Object.keys(debug.seen)) if (key.startsWith(id + ":") && !keys.has(key)) delete debug.seen[key];
-      const captures = [];
-      for (const listing of links) {
-        const key = `${id}:${listingKey(listing)}:${listing.applicationUrl}`;
-        if (debug.seen[key] || captures.length >= 3) continue;
-        debug.seen[key] = true;
-        const capture = {id: crypto.randomUUID(), monitorId: id, site: monitor.name, listingName: listing.name || "Floor plan", at: now(), status: "opening"};
-        debug.captures.unshift(capture);
-        captures.push({captureId: capture.id, url: listing.applicationUrl});
-      }
-      debug.captures = debug.captures.slice(0, 20);
-      return captures;
-    });
-    if (work.length) await patchRun(id, generation, monitor => { monitor.phase = "capturing"; });
-    for (const item of work) {
-      const controller = new AbortController();
-      const abort = () => controller.abort();
-      signal.addEventListener("abort", abort, {once: true});
-      debugRuns.set(item.captureId, controller);
-      let result;
-      let tabId = null;
-      try {
-        if (signal.aborted || !(await state()).debug?.enabled) throw new Error("Debug capture cancelled.");
-        const tab = await api.tabs.create({url: "about:blank", active: false});
-        tabId = tab.id;
-        await waitForPage(tab.id, controller.signal, false);
-        if (controller.signal.aborted) throw new Error("Debug capture cancelled.");
-        await api.tabs.update(tab.id, {url: item.url});
-        await waitForPage(tab.id, controller.signal, false);
-        if (controller.signal.aborted) throw new Error("Debug capture cancelled.");
-        const loaded = await api.tabs.get(tab.id);
-        if (!SUPPORTED_SITES.some(site => new URL(site.url).origin === new URL(loaded.url).origin)) throw new Error("The link redirected outside supported websites; open the captured tab to inspect it manually.");
-        const profile = (await api.storage.local.get(PROFILE_KEY))[PROFILE_KEY] || {};
-        const snapshots = await api.scripting.executeScript({target: {tabId: tab.id}, func: inspectApplicationPage, args: [Object.values(profile)]});
-        if (controller.signal.aborted) throw new Error("Debug capture cancelled.");
-        const snapshot = snapshots[0]?.result;
-        if (!snapshot?.pageKind) throw new Error("The destination page could not be inspected.");
-        result = {status: "captured", snapshot};
-      } catch (error) {
-        result = {status: "error", error: error.message.replace(/https?:\/\/[^\s]+/g, "[destination URL]").slice(0, 500)};
-      } finally {
-        signal.removeEventListener("abort", abort);
-        debugRuns.delete(item.captureId);
-      }
-      await mutate(value => {
-        const capture = value.debug?.captures.find(capture => capture.id === item.captureId);
-        if (capture) Object.assign(capture, result, {tabId});
-      });
-    }
-    if (work.length && !signal.aborted) await patchRun(id, generation, monitor => { monitor.phase = monitor.enabled ? "waiting" : "paused"; });
-  }
+  /** @param {import("./contracts.js").RuntimeCommand} message */
   async function dispatch(message) {
-    if (message.dashboardBuild && ['repeat-search-action', 'save-search', 'set-search-enabled', 'delete-search', 'prepare-application', 'fill-application', 'prepare-canvas-signature', 'open-listing', 'continue-application'].includes(message.type) && message.dashboardBuild !== APPLICATION_BUILD) throw new Error('SpotAlert versions do not match. Reload the extension at chrome://extensions and reopen the dashboard.');
+    validateCommand(message);
+    if (message.dashboardBuild && BUILD_SENSITIVE_COMMANDS.has(message.type) && message.dashboardBuild !== APPLICATION_BUILD) throw new Error('SpotAlert versions do not match. Reload the extension at chrome://extensions and reopen the dashboard.');
     switch (message.type) {
       case 'search-readiness': {
         const search = (await state()).searches.find(search => search.id === message.id);
@@ -640,7 +485,11 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
       case 'repeat-search-action': return repeatSearchAction(message);
       case "save-search": {
         const library = await profileLibrary();
-        const config = validateSearch(message.search || {}, library.profiles);
+        const existingSearch = (await state()).searches.find(item => item.id === message.search?.id);
+        const config = validateSearch(
+          {...message.search, intervalSeconds: message.search?.intervalSeconds ?? existingSearch?.intervalSeconds ?? 5},
+          library.profiles,
+        );
         if (config.actions.email && !(await api.storage.local.get(EMAIL_KEY))[EMAIL_KEY]?.apiKey) throw new Error("Configure the Resend API key in Settings → Email delivery first.");
         await mutate(value => {
           const existing = value.searches.find(item => item.id === message.search.id);
@@ -662,16 +511,29 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
         let config = null;
         if (message.enabled) {
           const library = await profileLibrary();
-          config = validateSearch({...search, actions: message.actions || search.actions, createAccount: message.createAccount ?? search.createAccount}, library.profiles);
+          config = validateSearch({...search, actions: message.actions || search.actions, createAccount: message.createAccount ?? search.createAccount, intervalSeconds: message.intervalSeconds ?? search.intervalSeconds ?? 5}, library.profiles);
           const readiness = await readinessFor({...search, ...config}, library);
           if (!readiness.canStart) throw new Error(readiness.blockers.join(' '));
         }
         await mutate(value => {
           const current = value.searches.find(item => item.id === message.id);
           if (!current || current.generation !== search.generation) throw new Error('This search changed. Review it before starting or pausing.');
-          Object.assign(current, {...(config ? {actions: config.actions, createAccount: config.createAccount} : {}), enabled: message.enabled, error: null, generation: crypto.randomUUID()});
+          Object.assign(current, {...(config ? {actions: config.actions, createAccount: config.createAccount, intervalSeconds: config.intervalSeconds} : {}), enabled: message.enabled, error: null, generation: crypto.randomUUID()});
         });
         if (!message.enabled) for (const [id, run] of applications) if (run.searchId === message.id) await stopApplication(id);
+        await reconcileSearchLocations();
+        return state();
+      }
+      case "set-search-interval": {
+        const search = (await state()).searches.find(item => item.id === message.id);
+        if (!search) throw new Error("Search not found.");
+        const library = await profileLibrary();
+        const config = validateSearch({...search, intervalSeconds: message.intervalSeconds}, library.profiles);
+        await mutate(value => {
+          const current = value.searches.find(item => item.id === message.id);
+          if (!current) throw new Error("Search not found.");
+          current.intervalSeconds = config.intervalSeconds;
+        });
         await reconcileSearchLocations();
         return state();
       }

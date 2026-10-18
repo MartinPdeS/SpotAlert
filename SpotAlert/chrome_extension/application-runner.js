@@ -6,6 +6,13 @@ import {applicationStep, captureApplicationStructure, prepareCanvasSignature} fr
 import {APPLICATION_BUILD} from "./application-diagnostics.js";
 import {openApplication, canvasBookingLink} from "./page.js";
 export function createApplicationRunner({api, now, state, mutate, find, applications, preparationControllers, applicationTabs, claimApplicationTab, waitForPage, profileLibrary, assignedProfile}) {
+  async function executeInTab(tabId, func, args = [], world) {
+    const results = await api.scripting.executeScript({
+      target: {tabId}, func, args, ...(world ? {world} : {}),
+    });
+    return results[0]?.result;
+  }
+
   async function applicationStatus(id, update) {
     await mutate(value => {
       const monitor = find(value, id);
@@ -47,7 +54,9 @@ export function createApplicationRunner({api, now, state, mutate, find, applicat
         const initial = direct && !/floorplans\.aspx$/i.test(new URL(direct).pathname) && !site.application.preferFloorplanEntry ? direct : monitor.url;
         const tab = await api.tabs.create({url: "about:blank", active: true});
         tabId = tab.id;
-        claimApplicationTab(tabId); claimed = true; claimedTabId = tabId;
+        claimApplicationTab(tabId);
+        claimed = true;
+        claimedTabId = tabId;
         await waitForPage(tabId, signal, false);
         if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
         await api.tabs.update(tabId, {url: initial});
@@ -57,7 +66,8 @@ export function createApplicationRunner({api, now, state, mutate, find, applicat
       const dates = new Map();
       const bookingAttempts = new Map();
       const acted = new Set();
-      let previousAction = null, actionAt = 0;
+      let previousAction = null;
+      let actionAt = 0;
       let lastInspection = null;
       for (let attempt = 0; attempt < 160 && Date.now() < deadline; attempt++) {
         if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
@@ -67,7 +77,7 @@ export function createApplicationRunner({api, now, state, mutate, find, applicat
         if (url.origin !== origin) return done("The website opened another origin. Continue there manually.", "navigation");
         await api.scripting.executeScript({target: {tabId}, func: () => { delete document.documentElement.dataset.spotalertApplicationStopped; }});
         try {
-          const page = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: applicationStep, args: [false, createAccount]}))[0]?.result;
+          const page = await executeInTab(tabId, applicationStep, [false, createAccount], "MAIN");
           if (!page) return done("Chrome could not inspect the application page.", "error");
           const inspection = `${url.pathname}:${page.step}:${page.kind}`;
           if (inspection !== lastInspection) {
@@ -75,7 +85,11 @@ export function createApplicationRunner({api, now, state, mutate, find, applicat
             lastInspection = inspection;
           }
           if (signal.aborted) return done("Application automation stopped. The tab stays open.", "cancelled");
-          if (page.kind === "loading") { await applicationStatus(id, {stage: "waiting-update"}); await new Promise(resolve => setTimeout(resolve, 250)); continue; }
+          if (page.kind === "loading") {
+            await applicationStatus(id, {stage: "waiting-update"});
+            await new Promise(resolve => setTimeout(resolve, 250));
+            continue;
+          }
           if (["verification", "account-exists"].includes(page.kind)) return done(page.message, page.kind, page);
           const path = url.pathname.toLowerCase();
           if (path.endsWith(config.paths.booking) && page.kind === 'validation') return done(page.message, page.kind, page);
@@ -88,14 +102,15 @@ export function createApplicationRunner({api, now, state, mutate, find, applicat
               bookingAttempts.set(key, (bookingAttempts.get(key) || 0) + 1);
               await applicationStatus(id, {message: "The booking page is idle and has not advanced. Retrying Start Application…", diagnostic: {event: "booking-retry", attempt: bookingAttempts.get(key)}});
               actionAt = Date.now();
-              const retry = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: startCanvasApplication, args: [dates.get(key), config.booking.waitMs]}))[0]?.result;
+              const retry = await executeInTab(tabId, startCanvasApplication, [dates.get(key), config.booking.waitMs], "MAIN");
               await applicationStatus(id, {diagnostic: {event: "booking-retry-result", started: !!retry?.started, ...(retry?.diagnostics || {})}});
               if (!retry?.started) return done(retry?.message || "Start Application could not be retried. Check the booking tab.", "date");
               actionAt = Date.now();
               continue;
             }
             if (Date.now() - actionAt > config.booking.retryAfterMs) return done("The website did not advance after the available attempts. Check the application tab for verification or an error.", "waiting");
-            await new Promise(resolve => setTimeout(resolve, 250)); continue;
+            await new Promise(resolve => setTimeout(resolve, 250));
+            continue;
           }
           if (previousAction?.includes(config.paths.booking) && path.endsWith(config.paths.applicant)) {
             await applicationStatus(id, {diagnostic: {event: "booking-advanced", path: url.pathname, step: page.step}});
@@ -103,20 +118,24 @@ export function createApplicationRunner({api, now, state, mutate, find, applicat
           previousAction = null;
           if (path.endsWith(config.paths.floorplans)) {
             if (acted.has(key)) return done("The website returned to the listing page. Check availability before applying again.", "navigation");
-            const result = (await api.scripting.executeScript({target: {tabId}, func: openApplication, args: [listing]}))[0]?.result;
+            const result = await executeInTab(tabId, openApplication, [listing]);
             if (!result?.opened) return done(result?.reason || "Could not open this floor plan.", "availability");
-            acted.add(key); previousAction = key; actionAt = Date.now();
+            acted.add(key);
+            previousAction = key;
+            actionAt = Date.now();
             await applicationStatus(id, {stage: "opening", message: "Opening availability for the selected floor plan…"});
           } else if (path.endsWith(config.paths.units)) {
             if (acted.has(key)) return done("The website returned to apartment selection. Review the available units.", "availability");
-            const result = (await api.scripting.executeScript({target: {tabId}, func: canvasBookingLink, args: [listing]}))[0]?.result;
+            const result = await executeInTab(tabId, canvasBookingLink, [listing]);
             if (!result?.opened && !result?.url) return done(result?.error || "No booking action found for this floor plan.", "availability");
             if (result.url) await api.tabs.update(tabId, {url: result.url});
-            acted.add(key); previousAction = key; actionAt = Date.now();
+            acted.add(key);
+            previousAction = key;
+            actionAt = Date.now();
             await applicationStatus(id, {stage: "opening", message: "Opening the apartment booking form…"});
           } else if (path.endsWith(config.paths.booking)) {
             if (!dates.has(key)) {
-              const date = (await api.scripting.executeScript({target: {tabId}, func: selectMoveInDate, args: [profile]}))[0]?.result;
+              const date = await executeInTab(tabId, selectMoveInDate, [profile]);
               if (!date?.moveInDate) return done(date?.moveInMessage || "Choose a move-in date on the website.", "date");
               dates.set(key, date.moveInDate);
               await applicationStatus(id, {stage: "selecting-date", message: date.moveInMessage, moveInDate: date.moveInDate, moveInMessage: date.moveInMessage, diagnostic: {event: "date-selected", date: date.moveInDate}});
@@ -125,34 +144,41 @@ export function createApplicationRunner({api, now, state, mutate, find, applicat
             }
             // Remember the attempt before execution: successful navigation can
             // destroy the injected context before Chrome returns its result.
-            previousAction = key; actionAt = Date.now();
+            previousAction = key;
+            actionAt = Date.now();
             bookingAttempts.set(key, 1);
-            const next = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: startCanvasApplication, args: [dates.get(key), config.booking.waitMs]}))[0]?.result;
+            const next = await executeInTab(tabId, startCanvasApplication, [dates.get(key), config.booking.waitMs], "MAIN");
             await applicationStatus(id, {diagnostic: {event: "booking-click-result", started: !!next?.started, ...(next?.diagnostics || {})}});
             if (!next?.started) return done(next?.message || "Check the booking page before continuing.", "date");
             bookingAttempts.set(key, 1);
-            previousAction = key; actionAt = Date.now();
+            previousAction = key;
+            actionAt = Date.now();
             await applicationStatus(id, {stage: "starting", message: "Starting the application…"});
           } else if (path.endsWith(config.paths.applicant)) {
             if (acted.has(key)) return done("This step has already been continued. Review the website before trying again.", "waiting");
             if (signatureOptions.enabled && config.agreementSignature && page.step === config.agreementSignature.step) {
-              const details = (await api.scripting.executeScript({target: {tabId}, world: 'MAIN', func: fillApplicationForm, args: [profile, config]}))[0]?.result;
+              const details = await executeInTab(tabId, fillApplicationForm, [profile, config], "MAIN");
               filled += details?.count || 0;
-              const prepared = (await api.scripting.executeScript({target: {tabId}, world: 'MAIN', func: prepareCanvasSignature, args: [signatureOptions.screening === true, config]}))[0]?.result;
+              const prepared = await executeInTab(tabId, prepareCanvasSignature, [signatureOptions.screening === true, config], "MAIN");
               if (prepared?.error || !prepared?.signatureSelected || !prepared?.agreementChecked || (signatureOptions.screening && !prepared?.screeningChecked)) return done(prepared?.error || 'The website did not confirm the selected agreement and signature options.', 'signature');
               return done(prepared.message, 'signature');
             }
             if (["documents", "review", "login", "unfamiliar"].includes(page.kind)) return done(page.message, page.kind, page);
-            const result = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: fillApplicationForm, args: [profile, config]}))[0]?.result;
+            const result = await executeInTab(tabId, fillApplicationForm, [profile, config], "MAIN");
             filled += result?.count || 0;
-            await applicationStatus(id, {stage: "filling", filled, message: `Filled ${filled} fields from Personal information…`});
+            await applicationStatus(id, {stage: "filling", filled, message: `Filled ${filled} fields from Applicants…`});
             // Reinspect after field changes; never advance based on stale validation.
-            const next = (await api.scripting.executeScript({target: {tabId}, world: "MAIN", func: applicationStep, args: [true, createAccount]}))[0]?.result;
-            if (next?.kind === "loading") { await new Promise(resolve => setTimeout(resolve, 250)); continue; }
+            const next = await executeInTab(tabId, applicationStep, [true, createAccount], "MAIN");
+            if (next?.kind === "loading") {
+              await new Promise(resolve => setTimeout(resolve, 250));
+              continue;
+            }
             if (!next?.advanced) return done(next?.message || "Details filled. Review this step on the website.", next?.kind, next || {});
-            acted.add(key); previousAction = key; actionAt = Date.now();
+            acted.add(key);
+            previousAction = key;
+            actionAt = Date.now();
             await applicationStatus(id, {stage: "waiting-update", message: "Continuing to the next application step…"});
-          } else return done("This page needs your review before continuing. Download its field structure to help add support.", "unfamiliar", {structure: (await api.scripting.executeScript({target: {tabId}, func: captureApplicationStructure}))[0]?.result});
+          } else return done("This page needs your review before continuing. Download its field structure to help add support.", "unfamiliar", {structure: await executeInTab(tabId, captureApplicationStructure, [])});
         } catch (error) {
           if (!/frame|context|document|navigation|removed/i.test(error.message)) throw error;
           await applicationStatus(id, {diagnostic: {event: "navigation-interrupted-script"}});

@@ -5,7 +5,29 @@ import {listingKey, safeListingUrl} from "./core.js";
 export function createSearchView({$, element, guard, request, loadState, switchTab, getState, getLibrary, openProfile, openLocation, showApplyConfirmation}) {
   let detailSearchId = null;
   let attentionOpen = false;
+  let quickFilter = 'all';
   const pendingActions = new Set();
+  const intervalLabel = (seconds) => seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${seconds / 60}m` : `${seconds / 3600}h`;
+  const refreshOptions = [[5, '5 seconds'], [30, '30 seconds'], [60, '1 minute'], [300, '5 minutes'], [600, '10 minutes'], [1800, '30 minutes'], [3600, '1 hour']];
+  const actionLabel = (record) => record
+    ? `${record.channel === 'email' ? 'Email' : 'Application'} · ${actionOutcome(record)}`
+    : 'No action yet';
+  const nextCheckLabel = (search) => {
+    if (!search.enabled) return 'Paused';
+    const monitors = search.locationIds.map(id => getState().monitors.find(item => item.id === id)).filter(Boolean);
+    if (monitors.some(monitor => ['queued', 'refreshing', 'reading', 'capturing'].includes(monitor.phase))) return 'Checking now';
+    const nextCheckAt = Math.min(...monitors.map(monitor => monitor.nextCheckAt).filter(Number.isFinite));
+    if (!Number.isFinite(nextCheckAt)) return 'Scheduling';
+    const seconds = Math.max(0, Math.ceil((nextCheckAt - Date.now()) / 1000));
+    return `Next in ${intervalLabel(seconds)}`;
+  };
+  const health = (monitor, status) => {
+    if (monitor?.error) return {kind: 'attention', label: 'Needs attention', title: errorRecovery(monitor.errorKind)};
+    if (status.kind === 'outdated') return {kind: 'delayed', label: 'Delayed', title: 'The last result is older than the expected refresh window.'};
+    if (status.kind === 'unchecked') return {kind: 'waiting', label: 'Waiting for first check', title: 'This location has not completed a successful check yet.'};
+    if (status.kind === 'checking') return {kind: 'checking', label: 'Checking', title: 'SpotAlert is reading this location now.'};
+    return {kind: 'healthy', label: 'Healthy', title: 'Recent availability data is available.'};
+  };
   function showSearchDetails(id, section = 'search-results') {
     detailSearchId = id;
     renderSearches();
@@ -31,6 +53,7 @@ export function createSearchView({$, element, guard, request, loadState, switchT
   function renderAttention() {
     const items = attentionItems(getState(), getLibrary());
     $('#search-review-total').textContent = items.length;
+    $('#attention-total').textContent = items.length;
     $('#show-attention').hidden = !items.length;
     if (!items.length) attentionOpen = false;
     $('#show-attention').setAttribute('aria-expanded', String(attentionOpen));
@@ -57,17 +80,23 @@ export function createSearchView({$, element, guard, request, loadState, switchT
     const searches = getState().searches || [];
     const matchEntries = search => Object.entries(search.results || {}).flatMap(([id, result]) => result.matches.filter(item => item.matched).map(listing => ({id, listing})));
 
+    $('#search-total').textContent = searches.length;
     $('#search-active-total').textContent = searches.filter(search => search.enabled).length;
     const matchTotal = searches.reduce((total, search) => total + matchEntries(search).length, 0);
     const resultsUnconfirmed = searches.some(search => search.locationIds.some(id => resultStatus(getState().monitors.find(item => item.id === id), search.results?.[id] || null).historical));
     $('#search-match-total').textContent = resultsUnconfirmed && !matchTotal ? '—' : matchTotal;
     $('#search-match-total').parentElement.lastChild.textContent = `${resultsUnconfirmed ? ' last known' : ''}${matchTotal === 1 ? ' match' : ' matches'}`;
+    const attentionSearches = new Set(attentionItems(getState(), getLibrary()).map(item => item.searchId).filter(Boolean));
+    document.querySelectorAll('[data-search-filter]').forEach(button => {
+      button.classList.toggle('active', button.dataset.searchFilter === quickFilter);
+      button.setAttribute('aria-pressed', String(button.dataset.searchFilter === quickFilter));
+    });
 
     const filter = $('#search-profile-filter');
     const selectedProfile = filter.value;
     const profiles = getLibrary()?.profiles || [];
-    if (JSON.stringify([...filter.options].map(option => [option.value, option.textContent])) !== JSON.stringify([['', 'All profiles'], ...profiles.map(profile => [profile.id, profile.name])])) {
-      filter.replaceChildren(element('option', {value: ''}, 'All profiles'), ...profiles.map(profile => element('option', {value: profile.id}, profile.name)));
+    if (JSON.stringify([...filter.options].map(option => [option.value, option.textContent])) !== JSON.stringify([['', 'All applicants'], ...profiles.map(profile => [profile.id, profile.name])])) {
+      filter.replaceChildren(element('option', {value: ''}, 'All applicants'), ...profiles.map(profile => element('option', {value: profile.id}, profile.name)));
       filter.value = profiles.some(profile => profile.id === selectedProfile) ? selectedProfile : '';
     }
     filter.disabled = !profiles.length;
@@ -78,7 +107,12 @@ export function createSearchView({$, element, guard, request, loadState, switchT
     const focusedCard = document.activeElement?.closest('.search-card')?.dataset.searchId;
     const focusedLabel = root.contains(document.activeElement) ? document.activeElement.textContent : null;
     root.replaceChildren();
-    for (const search of searches.filter(search => !filter.value || search.profileId === filter.value)) {
+    for (const search of searches.filter(search => {
+      if (filter.value && search.profileId !== filter.value) return false;
+      if (quickFilter === 'active') return search.enabled;
+      if (quickFilter === 'matches') return matchEntries(search).length > 0;
+      return quickFilter !== 'attention' || attentionSearches.has(search.id);
+    })) {
       const detailContent = element('div', {class: 'search-detail-content'});
       const profile = profiles.find(item => item.id === search.profileId);
       const criteria = profile?.details || {};
@@ -100,18 +134,41 @@ export function createSearchView({$, element, guard, request, loadState, switchT
       const apartment = ({studio: 'Studio', '1-bedroom': '1 bedroom', '2-bedroom': '2 bedrooms', '3-plus': '3+ bedrooms'})[criteria.preferredApartmentType];
       const facts = [apartment, criteria.maxRent && `Up to €${criteria.maxRent}`, criteria.minSize && `From ${criteria.minSize} m²`, criteria.moveInFrom && `Move in ${criteria.moveInFrom}`].filter(Boolean);
       const locationNames = search.locationIds.map(id => getState().monitors.find(item => item.id === id)?.name.replace('OurDomain · ', '').replace('Canvas · ', '') || id);
+      const requestedInterval = search.intervalSeconds ?? 5;
+      const locationIntervals = search.locationIds
+        .map(id => getState().monitors.find(item => item.id === id)?.intervalSeconds)
+        .filter(Number.isFinite);
+      const sharedInterval = locationIntervals.length ? Math.min(...locationIntervals) : requestedInterval;
+      const activeInterval = search.enabled ? sharedInterval : requestedInterval;
+      const isSharedFaster = search.enabled && sharedInterval < requestedInterval;
+      const latestAction = [...(search.activity || [])].sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+      const checkLabel = checking ? 'Checking' : states.some(item => item.historical)
+        ? states.some(item => item.kind === 'failed') ? 'Check failed' : 'Check needed'
+        : 'Checked';
+      const matchLabel = matches.length ? `${matches.length} ${matches.length === 1 ? 'match' : 'matches'}` : 'No matches';
       const card = element('article', {class: `search-card${search.enabled ? ' is-active' : ''}`, 'data-search-id': search.id, 'aria-labelledby': `search-title-${search.id}`},
         element('div', {class: 'search-card-heading'}, element('div', {class: 'search-identity'},
           element('div', {}, element('h3', {id: `search-title-${search.id}`}, search.name), element('p', {class: 'search-owner'}, profile?.name || 'Deleted profile'))),
-          element('span', {class: `search-status${search.enabled ? ' active' : ''}${search.enabled && errors.length ? ' attention' : ''}`}, element('span', {'aria-hidden': 'true'}), search.enabled ? errors.length ? 'Needs attention' : 'Active' : 'Paused')),
+          element('span', {class: `search-status${search.enabled ? checking ? ' checking' : errors.length ? ' attention' : ' active' : ''}`}, element('span', {'aria-hidden': 'true'}), search.enabled ? checking ? 'Checking' : errors.length ? 'Needs attention' : 'Active' : 'Paused')),
         element('p', {class: 'search-criteria-summary'}, facts.join(' · ') || 'Any apartment'),
-        element('p', {class: 'search-row-meta'}, locationNames.join(' · '), ' · ', [search.actions.email && 'Email', search.actions.autoApply && 'Auto-apply'].filter(Boolean).join(' + ')));
+        element('p', {class: 'search-row-meta'}, locationNames.join(' · '), ' · ', [search.actions.email && 'Email', search.actions.autoApply && 'Auto-apply'].filter(Boolean).join(' + ')),
+        element('div', {class: 'search-card-meta'},
+          element('span', {
+            class: 'search-interval',
+            title: search.enabled
+              ? `This search requested ${intervalLabel(requestedInterval)}. Shared location reads run at the fastest active interval.`
+              : `This search will request checks every ${intervalLabel(requestedInterval)} when started.`,
+          }, `Every ${intervalLabel(activeInterval)}`, isSharedFaster ? ' · shared fastest' : ''),
+          search.enabled && element('span', {class: 'search-next', 'data-search-next': search.id}, nextCheckLabel(search)),
+          element('ol', {class: 'search-progress', 'aria-label': `${search.name} search progress`},
+            element('li', {class: checking ? 'current' : states.some(item => item.historical) ? 'attention' : 'complete'}, element('span', {'aria-hidden': 'true'}), checkLabel),
+            element('li', {class: matches.length ? 'complete' : ''}, element('span', {'aria-hidden': 'true'}), matchLabel),
+            element('li', {class: latestAction ? latestAction.status === 'failed' || latestAction.status === 'interrupted' ? 'attention' : latestAction.status === 'queued' || latestAction.status === 'running' ? 'current' : 'complete' : ''}, element('span', {'aria-hidden': 'true'}), actionLabel(latestAction)))));
       if (profile?.testProfile) card.querySelector('.search-identity').append(element('span', {class: 'test-profile-badge'}, 'Test'));
       const viewResults = button(uncertain ? 'View status →' : matches.length ? `${matches.length} ${matches.length === 1 ? 'match' : 'matches'} →` : 'View details →', () => showSearchDetails(search.id), 'text-button view-search-results');
       viewResults.setAttribute('aria-label', `View results & history for ${search.name}`);
       detailContent.append(element('p', {class: 'search-detail-context'}, `${profile?.name || 'Deleted profile'} · ${facts.join(' · ') || 'Any apartment'}`));
       if (search.actions.email) detailContent.append(element('p', {class: 'helper search-recipient-caption'}, `Email: ${profile?.details.email || 'Missing email'}`));
-      card.append(element('p', {class: 'search-result-state', role: 'status'}, checking ? 'Checking locations…' : errors.length ? 'Check failed · availability unconfirmed' : uncertain ? states.some(item => item.kind === 'outdated') ? 'Results outdated' : 'Waiting for the first successful check' : matches.length ? `${matches.length} current ${matches.length === 1 ? 'match' : 'matches'}` : 'No matches'));
       if (search.error) card.append(element('p', {class: 'form-error'}, search.error));
       const results = element('details', {class: 'search-results'}, element('summary', {}, matches.length ? `Matches (${matches.length})` : 'Location status'));
       for (const id of search.locationIds) {
@@ -119,14 +176,34 @@ export function createSearchView({$, element, guard, request, loadState, switchT
         const result = search.results?.[id];
         const listings = result?.matches.filter(item => item.matched) || [];
         const status = resultStatus(monitor, result || null);
-        const locationStatus = element('div', {class: 'search-location-status'}, element('strong', {}, monitor?.name || id), element('p', {class: `helper result-status ${status.kind}`}, status.label), result && element('p', {class: 'helper'}, `Last successful check: ${new Date(result.at).toLocaleString()}${status.historical ? ' · Previous results; availability unconfirmed.' : ''}`));
+        const locationHealth = health(monitor, status);
+        const locationStatus = element('div', {class: 'search-location-status'},
+          element('div', {class: 'search-location-heading'},
+            element('strong', {}, monitor?.name || id),
+            element('button', {
+              type: 'button',
+              class: `location-health ${locationHealth.kind}`,
+              title: locationHealth.title,
+              'aria-label': `${monitor?.name || id}: ${locationHealth.label}. ${locationHealth.title}`,
+              onclick: () => { $('#search-detail-dialog').close(); openLocation(id); },
+            }, element('span', {'aria-hidden': 'true'}), locationHealth.label)),
+          element('p', {class: `helper result-status ${status.kind}`}, status.label),
+          result && element('p', {class: 'helper'}, `Last successful check: ${new Date(result.at).toLocaleString()}${status.historical ? ' · Previous results; availability unconfirmed.' : ''}`));
         if (monitor?.error) locationStatus.append(element('p', {class: 'form-error'}, monitor.error), element('p', {class: 'helper'}, errorRecovery(monitor.errorKind)), button('Review location & retry', () => { $('#search-detail-dialog').close(); openLocation(id); }, 'text-button'));
         results.append(locationStatus);
         for (const listing of listings) {
           const url = safeListingUrl(listing.applicationUrl || listing.pageUrl, monitor.url) || monitor.url;
+          const details = [
+            ['Bedrooms', listing.apartmentType === 'studio' ? 'Studio' : listing.beds],
+            ['Size', listing.size],
+            ['Bathrooms', listing.baths],
+            ['Units', Number.isInteger(listing.availableCount) && listing.availableCount > 0 ? String(listing.availableCount) : null],
+          ].filter(([, value]) => value);
           results.append(element('article', {class: 'search-result-apartment'},
             element('div', {class: 'sample-top'}, element('h4', {}, listing.name || listing.context || 'Apartment'), element('span', {class: 'pill'}, status.historical ? 'Previously matched' : 'Available')),
-            element('p', {class: 'listing-rent'}, listing.rent || 'Rent not published'), element('p', {class: 'listing-location'}, `${listing.size || 'Size not published'} · ${monitor.name}`),
+            element('p', {class: 'listing-rent'}, listing.rent || 'Rent not published'),
+            element('dl', {class: 'listing-details'}, ...details.flatMap(([label, value]) => [element('dt', {}, label), element('dd', {}, value)])),
+            element('p', {class: 'listing-location'}, monitor.name),
             listingClaimBadges(search, id, listing), element('div', {class: 'listing-actions'},
               element('a', {class: 'secondary-button', href: url, target: '_blank', rel: 'noopener noreferrer'}, 'View apartment ↗'),
               element('button', {type: 'button', class: 'primary-button', ...(status.historical ? {disabled: '', title: 'Run a successful check before applying from these results'} : {}), onclick: () => { $('#search-detail-dialog').close(); showApplyConfirmation(monitor, listing); }}, 'Apply ↗'))));
@@ -162,9 +239,24 @@ export function createSearchView({$, element, guard, request, loadState, switchT
         if (record.previousAttempts?.length) row.append(element('details', {class: 'search-earlier-attempts'}, element('summary', {}, `Earlier attempts (${record.previousAttempts.length})`), ...record.previousAttempts.map(attempt => element('p', {class: 'helper'}, `${actionOutcome(attempt)} · ${attempt.message}`))));
         activity.append(row);
       }
-      const actions = element('div', {class: 'search-card-actions'}, button(search.enabled ? 'Pause search' : 'Start search', () => search.enabled ? request({type: 'set-search-enabled', id: search.id, enabled: false}) : showStartSearch(search), 'secondary-button'));
+      const refresh = element('select', {
+        class: 'search-refresh-select',
+        'aria-label': `Refresh interval for ${search.name}`,
+        title: 'Change this search’s refresh interval',
+      }, ...refreshOptions.map(([seconds, label]) => element('option', {value: String(seconds), ...(seconds === requestedInterval ? {selected: ''} : {})}, label)));
+      refresh.addEventListener('change', guard(async () => {
+        refresh.disabled = true;
+        try {
+          await request({type: 'set-search-interval', id: search.id, intervalSeconds: refresh.value});
+        } finally {
+          refresh.disabled = false;
+          await loadState();
+        }
+      }));
+      const actions = element('div', {class: 'search-card-actions'},
+        button(search.enabled ? 'Check now' : 'Start search', () => search.enabled ? request({type: 'check-all', ids: search.locationIds}) : showStartSearch(search), 'primary-button'));
       const more = element('details', {class: 'search-more'}, element('summary', {'aria-label': `More actions for ${search.name}`}, '•••'));
-      more.append(element('div', {class: 'search-menu'}, button('Edit search', () => { more.open = false; showSearchEditor(search); }, 'text-button'), button('Delete search', () => request({type: 'delete-search', id: search.id}), 'search-delete')));
+      more.append(element('div', {class: 'search-menu'}, search.enabled && button('Pause search', () => request({type: 'set-search-enabled', id: search.id, enabled: false}), 'text-button'), element('label', {class: 'search-menu-refresh'}, 'Refresh every', refresh), button('Edit search', () => { more.open = false; showSearchEditor(search); }, 'text-button'), button('Delete search', () => request({type: 'delete-search', id: search.id}), 'search-delete')));
       actions.append(more);
       detailContent.append(results, excluded, activity);
       card.append(element('div', {class: 'search-card-bottom'}, viewResults, actions));
@@ -183,6 +275,16 @@ export function createSearchView({$, element, guard, request, loadState, switchT
     }
   }
   $('#search-profile-filter').addEventListener('change', renderSearches);
+  document.querySelectorAll('[data-search-filter]').forEach(button => button.addEventListener('click', () => {
+    quickFilter = button.dataset.searchFilter;
+    renderSearches();
+  }));
+  setInterval(() => {
+    for (const root of document.querySelectorAll('[data-search-next]')) {
+      const search = getState().searches.find(item => item.id === root.dataset.searchNext);
+      if (search) root.textContent = nextCheckLabel(search);
+    }
+  }, 1000);
   function searchProfilePreferences() {
     const profile = getLibrary().profiles.find(item => item.id === $('#search-profile').value);
     $('#search-recipient').textContent = profile?.details.email ? `Emails go to ${profile.details.email}.` : 'Save an email address in this profile to receive matches.';
@@ -200,7 +302,7 @@ export function createSearchView({$, element, guard, request, loadState, switchT
   function showSearchEditor(search = null) {
     editorSearchId = search?.id || null;
     $('#search-form').reset();
-    $('#search-editor-title').textContent = search ? 'Edit profile search' : 'Create a profile search';
+    $('#search-editor-title').textContent = search ? 'Edit search' : 'Create a search';
     $('#search-id').value = search?.id || '';
     $('#search-name').value = search?.name || '';
     $('#search-profile').replaceChildren(...getLibrary().profiles.map(profile => element('option', {value: profile.id}, profile.name)));
@@ -273,6 +375,7 @@ export function createSearchView({$, element, guard, request, loadState, switchT
     $('#start-email').checked = search.actions.email;
     $('#start-sms').checked = false;
     $('#start-create-account').checked = search.createAccount;
+    $('#start-search-interval').value = String(search.intervalSeconds ?? 5);
     $('#start-search-error').hidden = true;
     $('#start-search-dialog').showModal();
     await updateStartReadiness();
@@ -320,7 +423,7 @@ export function createSearchView({$, element, guard, request, loadState, switchT
     event.preventDefault();
     $('#confirm-start-search').disabled = true;
     try {
-      await request({type: 'set-search-enabled', id: startSearchSelection.id, expectedGeneration: startSearchSelection.generation, enabled: true, actions: startSearchActions(), createAccount: $('#start-auto-apply').checked && $('#start-create-account').checked});
+      await request({type: 'set-search-enabled', id: startSearchSelection.id, expectedGeneration: startSearchSelection.generation, enabled: true, actions: startSearchActions(), createAccount: $('#start-auto-apply').checked && $('#start-create-account').checked, intervalSeconds: $('#start-search-interval').value});
       $('#start-search-dialog').close();
       await loadState();
     } catch (error) {

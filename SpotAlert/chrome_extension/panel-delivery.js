@@ -60,7 +60,7 @@ export function createDeliveryView({$, element, guard, request, loadState, switc
     reviewedClientReply = $("#client-reply").value; $("#import-client-profile").hidden = false;
   }));
   $("#import-client-profile").addEventListener("click", guard(async () => {
-    if (isPersonalDirty()) throw new Error("Save your edits in Profiles before importing a profile.");
+    if (isPersonalDirty()) throw new Error("Save your edits in Applicants before importing a profile.");
     if (!reviewedClientReply || reviewedClientReply !== $("#client-reply").value) throw new Error("Review the answers first.");
     const button = $("#import-client-profile"); button.disabled = true;
     try {

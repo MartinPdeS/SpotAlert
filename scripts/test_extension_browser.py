@@ -10,7 +10,11 @@ from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from types import SimpleNamespace
 
-from browser_helpers import select_building_for_actions
+from browser_helpers import (
+    extension_worker,
+    launch_extension,
+    select_building_for_actions,
+)
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,15 +31,11 @@ def main():
         shutil.copytree(ROOT / "SpotAlert/chrome_extension", extension)
         with sync_playwright() as playwright:
             def launch():
-                browser_context = playwright.chromium.launch_persistent_context(
-                    str(temp / "profile"), channel="chromium", headless=True,
+                browser_context = launch_extension(
+                    playwright, temp / "profile", extension,
                     viewport={"width": 390, "height": 1000},
-                    args=["--disable-features=DisableLoadExtensionCommandLineSwitch", f"--disable-extensions-except={extension}", f"--load-extension={extension}"],
-                    ignore_default_args=["--disable-extensions"],
                 )
-                worker = browser_context.service_workers[0] if browser_context.service_workers else browser_context.wait_for_event("serviceworker")
-                worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
-                worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profiles disabled in isolated tests');};}")
+                extension_worker(browser_context)
                 return browser_context
 
             context = launch()
@@ -57,12 +57,12 @@ def main():
                 errors = []
                 panel.on("pageerror", lambda error: errors.append(str(error)))
                 panel.goto(f"chrome-extension://{extension_id}/panel.html")
-                panel.get_by_role("tab", name="Locations", exact=True).click()
+                panel.get_by_role("tab", name="Websites", exact=True).click()
                 expect(panel.locator("#monitor-count")).to_have_text("3")
                 panel.get_by_role("tab", name="Settings", exact=True).click()
                 expect(panel.locator("#email-delivery-title")).to_have_text("Email delivery")
                 expect(panel.locator("#notification-email")).to_have_count(0)
-                panel.get_by_role("tab", name="Locations", exact=True).click()
+                panel.get_by_role("tab", name="Websites", exact=True).click()
 
                 expect(panel.locator("#discovery-title")).to_have_count(0)
                 expect(panel.locator("#add-monitor")).to_have_count(0)
@@ -192,7 +192,7 @@ def main():
             try:
                 panel = context.new_page()
                 panel.goto(f"chrome-extension://{extension_id}/panel.html")
-                panel.get_by_role("tab", name="Locations", exact=True).click()
+                panel.get_by_role("tab", name="Websites", exact=True).click()
                 expect(panel.locator("#monitor-count")).to_have_text("3")
                 expect(panel.locator("#compact-view")).to_be_checked()
                 expect(panel.locator("body")).to_have_class("compact")
@@ -226,7 +226,7 @@ def main():
                 assert checks >= 6, "Five-second refresh did not run with the panel closed"
                 panel = context.new_page()
                 panel.goto(f"chrome-extension://{extension_id}/panel.html")
-                panel.get_by_role("tab", name="Locations", exact=True).click()
+                panel.get_by_role("tab", name="Websites", exact=True).click()
                 select_building_for_actions(panel)
                 panel.get_by_role("button", name="Stop monitoring", exact=True).click()
                 expect(panel.locator("#active-count")).to_have_text("0")

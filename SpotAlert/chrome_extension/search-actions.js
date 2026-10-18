@@ -2,7 +2,7 @@ import {searchReadiness, searchClaimKey, claimActionId} from "./searches.js";
 import {EMAIL_KEY, sendEmailAlert} from "./email.js";
 import {validateProfile} from "./profile.js";
 import {sitePattern, listingKey, evaluateRule, safeListingUrl} from "./core.js";
-export function createSearchActions({api, now, state, mutate, find, history, profileLibrary, check, clearFastTimer, cancel, alarmName, applications, runApplication}) {
+export function createSearchActions({api, now, state, mutate, find, history, profileLibrary, check, clearFastTimer, cancel, alarmName, applications, runApplication, reschedule}) {
   let searchActions = Promise.resolve();
   // Searches share page reads, but retain their own matches and action records.
   async function reconcileSearchLocations() {
@@ -17,11 +17,41 @@ export function createSearchActions({api, now, state, mutate, find, history, pro
         history(monitor, {kind: start ? 'started' : 'paused', message: start ? 'Started for profile searches.' : 'No active profile searches use this location.'});
         transitions.push({id: monitor.id, enabled: start});
       }
+      for (const monitor of value.monitors) {
+        const searchIntervals = (value.searches || [])
+          .filter(search => search.enabled && search.locationIds.includes(monitor.id))
+          .map(search => search.intervalSeconds ?? 5);
+        if (searchIntervals.length) {
+          monitor.generalIntervalSeconds ??= monitor.intervalSeconds;
+        }
+        const generalIntervalSeconds = monitor.generalIntervalSeconds ?? monitor.intervalSeconds;
+        const generalInterval = monitor.enabled && !monitor.searchManaged
+          ? generalIntervalSeconds
+          : Infinity;
+        const requestedInterval = Math.min(generalInterval, ...searchIntervals);
+        const intervalSeconds = Number.isFinite(requestedInterval)
+          ? requestedInterval
+          : generalIntervalSeconds;
+        if (monitor.intervalSeconds === intervalSeconds) continue;
+        monitor.intervalSeconds = intervalSeconds;
+        transitions.push({id: monitor.id, enabled: monitor.enabled, reschedule: true});
+      }
       return transitions;
     });
-    for (const {id, enabled} of transitions) {
-      if (enabled) check(id, true).catch(console.error);
-      else { clearFastTimer(id); cancel(id); await api.alarms.clear(alarmName(id)); }
+    for (const id of new Set(transitions.map(item => item.id))) {
+      const locationTransitions = transitions.filter(item => item.id === id);
+      const stopped = locationTransitions.some(item => !item.enabled);
+      const started = locationTransitions.some(item => item.enabled && !item.reschedule);
+      const intervalChanged = locationTransitions.some(item => item.reschedule);
+      if (stopped) {
+        clearFastTimer(id);
+        cancel(id);
+        await api.alarms.clear(alarmName(id));
+      } else if (started) {
+        check(id, true).catch(console.error);
+      } else if (intervalChanged) {
+        await reschedule(id);
+      }
     }
   }
   async function readinessFor(search, library = null) {

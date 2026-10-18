@@ -94,6 +94,7 @@ export function mergeActionHistory(records = [], activity = []) {
 }
 
 
+/** @returns {import("./contracts.js").ResultStatus} */
 export function resultStatus(monitor = {}, result = undefined, now = Date.now()) {
   if (['queued', 'refreshing', 'reading', 'capturing'].includes(monitor.phase)) return {kind: 'checking', label: 'Checking…', historical: true};
   if (monitor.error) return {kind: 'failed', label: 'Check failed', historical: true};

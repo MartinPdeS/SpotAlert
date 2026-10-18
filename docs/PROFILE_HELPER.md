@@ -22,3 +22,6 @@ file permissions. Keep backups private. Removing the extension or clearing Chrom
 storage leaves this folder intact. Without the helper, profiles stay in Chrome's
 local extension storage. The extension's `nativeMessaging` permission is used for
 this helper; the old Python monitoring bridge is separate and unused by the app.
+
+Saved applicant details and preferences are managed in **Applicants**. The optional
+folder connection remains in **Settings → Advanced**.

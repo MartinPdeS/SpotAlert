@@ -1,17 +1,21 @@
+import {createNavigation} from "./panel-navigation.js";
+import {createApplicationView} from "./panel-application.js";
+import {element} from "./panel-dom.js";
+import {mountProfileFields} from "./panel-profile-fields.js";
+import {createMaintenanceView} from "./panel-maintenance.js";
 import {diagnosticReport, diagnosticText} from './diagnostics.js';
 import {createSearchView} from "./panel-searches.js";
 import {createDeliveryView} from "./panel-delivery.js";
-import {siteForUrl} from './sites/index.js';
 import {APPLICATION_BUILD, applicationReport} from "./application-diagnostics.js";
 import {STORAGE_KEY, siteError, listingKey, safeListingUrl, sitePattern, validateMonitor} from "./core.js";
 
 import {UI_KEY, freshness, availabilityTotals, cleanError, resultStatus, monitoringScope, errorRecovery} from "./ui.js";
-import {PROFILE_KEY, PROFILES_KEY, PROFILE_FIELDS, PROFILE_SECTIONS, profileCompleteness, requiredProfileFields, generateRegistrationPassword} from "./profile.js";
+import {PROFILE_KEY, PROFILES_KEY, PROFILE_FIELDS, profileCompleteness, requiredProfileFields, generateRegistrationPassword} from "./profile.js";
 
 const $ = (selector) => document.querySelector(selector);
+const {switchTab, hasVisited} = createNavigation($);
 let value = {monitors: []};
 let selectedId = null;
-let workspaceVisited = false;
 let showAllSamples = false;
 let historyFilter = "all";
 let listingFilter = "all";
@@ -39,7 +43,6 @@ let loadingState = false;
 let reloadState = false;
 let personalProfile = {};
 let applicantLibrary = {profiles: []};
-let pendingApplication = null;
 let compactView = false;
 let checkBuildingIds = new Set();
 let buildingSelectionWrites = 0;
@@ -69,18 +72,6 @@ import {EMAIL_KEY, CONTACT_KEY} from "./email.js";
 let contactsLoaded = false;
 let personalDirty = false;
 
-function element(tag, attributes = {}, ...children) {
-  const item = document.createElement(tag);
-  for (const [key, attr] of Object.entries(attributes)) {
-    if (key === "class") item.className = attr;
-    else if (key === "onclick") item.addEventListener("click", attr);
-    else item.setAttribute(key, attr);
-  }
-  for (const child of children.flat(Infinity)) {
-    if (child !== undefined && child !== null && typeof child !== "boolean") item.append(child instanceof Node ? child : document.createTextNode(String(child)));
-  }
-  return item;
-}
 const busy = (monitor) => ["queued", "refreshing", "reading", "capturing"].includes(monitor.phase);
 const clock = (timestamp) => timestamp ? new Date(timestamp).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"}) : "—";
 const interval = (seconds) => seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${seconds / 60}m` : `${seconds / 3600}h`;
@@ -155,7 +146,7 @@ async function loadState() {
       }
       if (!value.monitors.some((monitor) => monitor.id === selectedId)) selectedId = value.monitors[0]?.id || null;
       render();
-      if (!workspaceVisited && value.searches?.length) switchTab("searches");
+      if (!hasVisited() && value.searches?.length) switchTab("searches");
       updateProfilePresentation();
     } while (reloadState);
   } finally { loadingState = false; }
@@ -560,52 +551,15 @@ setInterval(() => {
   if (monitor && node) node.textContent = nextLabel(monitor);
   updateFreshness();
 }, 1000);
-const orderedSections = [...PROFILE_SECTIONS].sort((a, b) => {
-  const order = ["Identity & contact", "Moving preferences", "Account password"];
-  return (order.indexOf(a.title) < 0 ? 99 : order.indexOf(a.title)) - (order.indexOf(b.title) < 0 ? 99 : order.indexOf(b.title));
+mountProfileFields($);
+const {showApplyConfirmation} = createApplicationView({
+  $, element, guard, request, toast, getLibrary: () => applicantLibrary,
+  isPersonalDirty: () => personalDirty,
 });
-for (const section of orderedSections) {
-  const details = element("details", {class: "profile-group"});
-  details.open = section.title === "Identity & contact";
-  details.dataset.fields = section.fields.map(([key]) => key).join(",");
-  details.append(element("summary", {}, element("span", {class: "profile-section-title"}, section.title), element("span", {class: "profile-section-count"})));
-  if (section.helper) details.append(element("p", {class: "helper"}, section.helper));
-  const grid = element("div", {class: "profile-fields"});
-  const identityOrder = ["firstName", "lastName", "middleName", "noMiddleName", "dateOfBirth", "email", "phone", "nationality", "countryOfResidence", "title", "preferredName", "contactMethod"];
-  const fields = section.title === "Identity & contact" ? [...section.fields].sort(([a], [b]) => identityOrder.indexOf(a) - identityOrder.indexOf(b)) : section.fields;
-  for (const [key, label, type] of fields) {
-    const wrapper = element("label", {"data-profile-field": key}, element("span", {class: "field-label"}, label, element("small", {class: "field-requirement"})));
-    const checkbox = key === "noMiddleName";
-    const input = checkbox ? element("input", {id: `personal-${key}`, type: "checkbox"}) : Array.isArray(type) ? element("select", {id: `personal-${key}`}) : element("input", {id: `personal-${key}`, type: type || "text", maxlength: "200"});
-    if (Array.isArray(type) && !checkbox) for (const choice of ["", ...type]) input.append(element("option", {value: choice}, choice || "Choose…"));
-    input.setAttribute("aria-describedby", "profile-field-note");
-    if (checkbox) wrapper.classList.add("checkbox-label", "profile-checkbox");
-    if (type === "number") { input.min = "0"; input.step = "0.01"; }
-    if (type === "password") {
-      const reveal = element("button", {type: "button", class: "password-reveal", "aria-label": "Show account password", "aria-pressed": "false", onclick: () => {
-        const show = input.type === "password";
-        input.type = show ? "text" : "password";
-        reveal.textContent = show ? "Hide" : "Show";
-        reveal.setAttribute("aria-label", show ? "Hide account password" : "Show account password");
-        reveal.setAttribute("aria-pressed", String(show));
-      }}, "Show");
-      wrapper.append(element("div", {class: "profile-password"}, input, reveal));
-    } else wrapper.append(input);
-    grid.append(wrapper);
-  }
-  if (section.title === "Identity & contact") {
-    const middle = grid.querySelector('[data-profile-field="middleName"]');
-    const checkbox = grid.querySelector('[data-profile-field="noMiddleName"]');
-    const group = element("div", {class: "middle-name-field"});
-    middle.replaceWith(group);
-    group.append(element("span", {class: "middle-name-heading"}, "Middle name"), middle, checkbox);
-  }
-  details.append(grid);
-  $("#profile-sections").append(details);
-}
 const viewContext = {$, element, guard, request, loadState, switchTab, toast, openProfile, openLocation: id => { selectLocation(id); switchTab("monitoring"); }, showApplyConfirmation, getState: () => value, getLibrary: () => applicantLibrary, isPersonalDirty: () => personalDirty};
 const {renderSearches} = createSearchView(viewContext);
 const {renderSettings} = createDeliveryView(viewContext);
+const {renderDebug} = createMaintenanceView({...viewContext, clock});
 loadState().catch((error) => toast(error.message, true));
 
 function updateProfilePresentation() {
@@ -690,29 +644,6 @@ $("#clear-personal").addEventListener("click", guard(async () => {
   $("#personal-error").hidden = true;
   toast("Profile deleted.");
 }));
-$("#open-extension-settings").addEventListener("click", guard(() => chrome.tabs.create({url: "chrome://extensions"})));
-$("#reload-dashboard").addEventListener("click", () => location.reload());
-$('#reload-extension').addEventListener('click', guard(() => {
-  if (personalDirty) { toast('Save your profile changes before reloading the extension.', true); return; }
-  const button = $('#reload-extension');
-  button.disabled = true;
-  button.textContent = 'Reloading…';
-  chrome.runtime.reload();
-}));
-async function checkExtensionVersion() {
-  try {
-    const info = await request({type: "engine-info"});
-    $("#extension-version").textContent = `SpotAlert ${info.version} · Application build ${APPLICATION_BUILD}`;
-    const source = await (await fetch(chrome.runtime.getURL('application-diagnostics.js'), {cache: 'no-store'})).text();
-    const diskBuild = source.match(/APPLICATION_BUILD\s*=\s*['"]([^'"]+)/)?.[1];
-    $("#extension-update").hidden = info.build === APPLICATION_BUILD && (!diskBuild || diskBuild === info.build);
-  } catch {
-    $("#extension-update").hidden = false;
-  }
-}
-checkExtensionVersion();
-setInterval(checkExtensionVersion, 15000);
-
 $("#stop-all").addEventListener("click", guard(async () => {
   $("#stop-all").disabled = true;
   try {
@@ -728,128 +659,12 @@ $("#compact-view").addEventListener("change", guard(async () => {
   await saveUiPreferences({compact: compactView});
 }));
 
-function renderDebug() {
-  const debug = value.debug || {enabled: false, captures: []};
-  const captures = debug.captures || [];
-  $("#debug-mode").checked = Boolean(debug.enabled);
-  $("#debug-count").textContent = captures.length;
-  $("#debug-status").textContent = debug.enabled ? "On · watches direct links in your matching listings. Latest 20 captures are kept." : "Debug capture is off.";
-  $("#export-debug").disabled = !captures.length;
-  $("#clear-debug").disabled = !captures.length;
-  const opened = new Set([...$("#debug-captures").querySelectorAll("details[open]")].map(node => node.dataset.captureId));
-  $("#debug-captures").replaceChildren(...captures.slice(0, 5).map(capture => {
-    const card = element("details", {class: "debug-capture", "data-capture-id": capture.id},
-    element("summary", {}, capture.listingName, element("span", {class: "muted"}, ` · ${capture.status === "opening" ? "Opening…" : capture.status === "error" ? "Failed" : capture.snapshot?.pageKind || "Captured"}`)),
-    element("p", {class: "helper"}, `${capture.site} · ${clock(capture.at)}`),
-    capture.error && element("p", {class: "form-error"}, capture.error),
-    capture.tabId && element("button", {class: "text-button", onclick: guard(() => request({type: "open-debug", captureId: capture.id}))}, "Open captured tab ↗"),
-    capture.snapshot && element("pre", {class: "debug-output"}, JSON.stringify(capture.snapshot, null, 2)),
-    );
-    card.open = opened.has(capture.id);
-    return card;
-  }));
-}
-$("#debug-mode").addEventListener("change", guard(async () => {
-  const button = $("#debug-mode");
-  button.disabled = true;
-  try { await request({type: "set-debug", enabled: button.checked}); await loadState(); }
-  finally { button.disabled = false; }
-}));
-$("#clear-debug").addEventListener("click", guard(async () => {
-  await request({type: "clear-debug"}); await loadState();
-}));
-$("#export-debug").addEventListener("click", () => {
-  const captures = (value.debug?.captures || []).map(({tabId, ...capture}) => capture);
-  const blob = new Blob([JSON.stringify({version: 1, captures}, null, 2)], {type: "application/json"});
-  const url = URL.createObjectURL(blob);
-  element("a", {href: url, download: "spotalert-debug-captures.json"}).click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-});
-
-const workspaceTabs = ["searches", "monitoring", "personal", "clients", "settings"];
-function switchTab(name) {
-  const changed = $(`#${name}-tab`).getAttribute("aria-selected") !== "true";
-  workspaceVisited = true;
-  for (const tab of workspaceTabs) {
-    const active = tab === name;
-    $(`#${tab}-tab`).setAttribute("aria-selected", String(active));
-    $(`#${tab}-tab`).tabIndex = active ? 0 : -1;
-    $(`#${tab}-view`).hidden = !active;
-  }
-  if (changed) window.scrollTo({top: 0, behavior: "instant"});
-}
-for (const name of workspaceTabs) {
-  $(`#${name}-tab`).addEventListener("click", () => switchTab(name));
-  $(`#${name}-tab`).addEventListener("keydown", event => {
-    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-      event.preventDefault();
-      const next = event.key === "Home" ? workspaceTabs[0] : event.key === "End" ? workspaceTabs.at(-1) : workspaceTabs[(workspaceTabs.indexOf(name) + (event.key === "ArrowRight" ? 1 : workspaceTabs.length - 1)) % workspaceTabs.length];
-      switchTab(next);
-      $(`#${next}-tab`).focus();
-    }
-  });
-}
 $("#enable-profile-folder").addEventListener("click", guard(async () => {
   if (personalDirty) throw new Error("Save your profile changes first.");
   await request({type: "enable-profile-folder"}); await loadState(); toast("Profiles saved to the local SpotAlert folder.");
 }));
 $("#open-profile-folder").addEventListener("click", guard(() => request({type: "open-profile-folder"})));
 
-let applicationChoice = null;
-function showApplyConfirmation(monitor, sample) {
-  applicationChoice = {monitor, sample};
-  $("#signature-consent").checked = false;
-  $("#apply-agreements").hidden = !siteForUrl(monitor.url)?.application.agreementSignature;
-  pendingApplication = null;
-  const picker = $("#apply-profile");
-  picker.replaceChildren(element("option", {value: ""}, "Choose a profile…"), ...applicantLibrary.profiles.map(entry => element("option", {value: entry.id}, entry.name)));
-  picker.value = "";
-  updateApplyConfirmation();
-  $("#apply-confirmation").showModal();
-}
-function updateApplyConfirmation() {
-  const list = $("#apply-confirmation-details"); list.replaceChildren();
-  const applicant = applicantLibrary.profiles.find(item => item.id === $("#apply-profile").value);
-  pendingApplication = null;
-  $("#confirm-apply").disabled = true;
-  if (!applicationChoice) return;
-  const {monitor, sample} = applicationChoice;
-  for (const [label, detail] of [["Location", monitor.name], ["Apartment", sample.name || sample.context || "Selected apartment"], ["Rent", sample.rent || "Not published"]]) list.append(element("dt", {}, label), element("dd", {}, detail));
-  if (!applicant) {
-    $("#apply-confirmation-note").textContent = "Choose the profile to use for this application.";
-    return;
-  }
-  if (personalDirty && applicant.id === applicantLibrary.activeId) {
-    $("#apply-confirmation-note").textContent = "Save this profile’s changes in Profiles before applying.";
-    return;
-  }
-  if (applicant.testProfile) list.append(element("dt", {}, "Profile type"), element("dd", {class: "test-profile-badge"}, "Test profile · fictional details"));
-  const preferred = applicant.details.moveInFrom;
-  let dateLabel = "First allowed weekday";
-  if (preferred) {
-    const date = new Date(`${preferred}T12:00:00`);
-    while ([0, 6].includes(date.getDay())) date.setDate(date.getDate() + 1);
-    dateLabel = `On or after ${date.getFullYear()}-${String(date.getMonth()+1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-  }
-  for (const [label, detail] of [["Applicant", applicant.name], ["Name", [applicant.details.firstName, applicant.details.lastName].filter(Boolean).join(" ") || "Not provided"], ["Email", applicant.details.email || "Not provided"], ["Move-in", dateLabel]]) list.append(element("dt", {}, label), element("dd", {}, detail));
-  pendingApplication = {id: monitor.id, listingId: listingKey(sample), profileId: applicant.id};
-  $("#confirm-apply").disabled = false;
-  $("#apply-confirmation-note").textContent = "This profile is used for this application only. The move-in date is checked against the website calendar. Review agreements and final submission on the website.";
-}
-$("#apply-profile").addEventListener("change", updateApplyConfirmation);
-$("#cancel-apply").addEventListener("click", () => $("#apply-confirmation").close());
-$("#confirm-apply").addEventListener("click", guard(async () => {
-  updateApplyConfirmation();
-  if (!pendingApplication) return;
-  const signatureConsent = $("#signature-consent").checked;
-  const command = {...pendingApplication, createAccount: $("#apply-create-account").checked, signatureConsent, screening: signatureConsent};
-  if (signatureConsent) {
-    $("#signature-consent").checked = false;
-  }
-  pendingApplication = null; $("#apply-confirmation").close();
-  const result = await request({type: "open-listing", ...command});
-  if (result.moveInMessage) toast(result.moveInMessage);
-}));
 function readProfileField(key) {
   const input = $(`#personal-${key}`);
   return key === "noMiddleName" ? input.checked ? "Yes" : "No" : input.value;

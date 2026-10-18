@@ -24,9 +24,13 @@ The expand button opens the same interface as a full-page developer workspace.
 
 ## Workspace
 
-Navigation follows **Searches, Locations, Profiles, Clients, Settings**.
-**Searches** manages applicant-specific matching and email/application actions.
-**Locations** manages general website monitoring without applicant criteria.
+Navigation follows **My searches, Websites, Applicants, Clients, Settings**.
+**My searches** manages applicant-specific matching and email/application actions.
+**Websites** manages general website monitoring without applicant criteria.
+**Applicants** holds saved applicant details and preferences; **Clients** handles
+questionnaires and replies. Reload is available in **Settings → Extension**; an
+update-required notice still appears above navigation when needed. Search result
+links and availability carry more emphasis than timing and check telemetry.
 The shared action bar groups **Start/Stop monitoring** and **Check now** above
 the buildings. Each detail panel shows availability and settings. **Stop monitoring** leaves profile searches running; pausing
 the last profile search leaves general monitoring running if it is on. Page reads
@@ -141,7 +145,7 @@ inspection. Disabling debug mode or Stop all cancels pending capture work.
 
 Click **Apply** on an apartment, choose a profile, and confirm. For Canvas, the dialog has an optional **Include Canvas agreements & signature** toggle. It checks the screening agreement (`chkTandCAgree`), bottom agreement (`chkAgreement`), and selects **Signature Type 1**. Review the terms before enabling; Save and final submission remain manual. The toggle starts off for each application. Run `.venv/bin/python scripts/test_signature_browser.py` to check the selections against isolated synthetic pages.
 
-Open **Profiles** to save your first and last name,
+Open **Applicants** to save your first and last name,
 email, phone, street address, postal code, and city. These details stay in
 Chrome local extension storage, separate from monitor history and rule exports.
 **Delete saved details** clears them. An application readiness badge checks that first name, last name, valid email, and phone are saved; address fields remain optional. Additional application requirements still need review.
@@ -206,7 +210,7 @@ matching, automatic applications and notifications.
 ## Location filters
 
 **Configure monitor** retains optional apartment-type and floor-plan filters for
-the Monitoring view. Profile searches independently evaluate raw location results
+the Websites view. Profile searches independently evaluate raw location results
 using the selected profile’s preferences. Saving location configuration pauses it;
 active searches will restart any location they still require.
 
@@ -265,6 +269,12 @@ synced to another device. Access to supported websites is declared upfront.
 
 The extension uses plain JavaScript modules, HTML, and CSS. No build step or npm
 installation is required; edit the files and reload the extension in Chrome.
+
+See [the development guide](docs/DEVELOPMENT.md) for module ownership, shared
+command/state contracts, restart transitions, the consolidated stylesheet, and
+focused behavior suites. The existing `node --test tests/chrome_extension.test.cjs`
+command still runs every extension behavior test. Browser suites share isolated
+setup in `scripts/browser_helpers.py` and block unmatched browser requests.
 
 - [`sites/`](SpotAlert/chrome_extension/sites/): provider-specific rules and application configuration.
 - [`core.js`](SpotAlert/chrome_extension/core.js): shared validation and matching.
@@ -347,7 +357,7 @@ Local profile storage is an optional macOS/Linux helper. See [setup, storage for
 
 ### Two realistic fictional test profiles
 
-In **Profiles → Profile actions**, click
+In **Applicants → Profile actions**, click
 **Generate two realistic test profiles**. This adds two clearly named fictional
 applicants and selects the first one. Both have generated passwords, birth dates, and different housing
 preferences. Their emails use `example.com`; identification and bank fields
@@ -380,11 +390,10 @@ Application operations hold a per-tab lock across asynchronous work; duplicate p
 
 ### Profile-oriented searches
 
-Open **Profile searches** and choose **New search**. Select a saved applicant profile,
+Open **My searches** and choose **New search**. Select a saved applicant profile,
 choose locations, and select **Email the profile holder**, **Auto-apply**, or both.
 Budget, minimum size, apartment type and move-in date are read directly from the
-profile and displayed as a read-only summary. Edit them once in **Personal
-information**; all searches for that profile use the updated values. Existing
+profile and displayed as a read-only summary. Edit them once in **Applicants**; all searches for that profile use the updated values. Existing
 copied search overrides are retired without changing the saved profile.
 Saving creates or updates a paused search. **Start search** opens an action dialog
 with separate auto-apply, email and SMS switches. Each switch has an explicit On/Off
@@ -393,10 +402,20 @@ confirm to begin; cancelling leaves the search paused. SMS is visibly unavailabl
 until an SMS provider is added. **Pause search** stops that search without
 interrupting other profiles.
 
-Locations share one page read across active searches. Search matching uses the
-location’s availability rule and its assigned profile’s current preferences,
-independently of location filters and the currently selected dashboard profile. Location refresh
-intervals, monitoring hours, and error backoff remain configured in **Monitoring**.
+Locations share one page read across active searches. When starting a search,
+choose its refresh interval; new searches default to **5 seconds**. A shared
+location uses the fastest interval requested by its active searches or general
+monitoring. Search matching uses the location’s availability rule and its
+assigned profile’s current preferences, independently of location filters and
+the currently selected dashboard profile. Monitoring hours and error backoff
+remain configured in **Websites**.
+
+Each search card shows its effective interval, next-check countdown, and a
+compact check/match/action timeline. Use its **Check now**, refresh selector,
+or Start/Pause controls without opening the details view. Location-health
+indicators in search details identify healthy, delayed, checking, or
+attention-needed locations; select one to open that location and its recovery
+guidance.
 Standalone location watches continue checking without sending notifications.
 A location started by searches pauses when its last search pauses; a location
 that was already being watched independently continues checking. **Stop all**

@@ -6,7 +6,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from browser_helpers import select_building_for_actions
+from browser_helpers import (
+    extension_worker,
+    launch_extension,
+    select_building_for_actions,
+)
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,15 +72,11 @@ def main():
         shutil.copytree(ROOT / "SpotAlert/chrome_extension", extension)
         with sync_playwright() as playwright:
             def launch():
-                browser_context = playwright.chromium.launch_persistent_context(
-                    str(temporary / "profile"), channel="chromium", headless=True,
+                browser_context = launch_extension(
+                    playwright, temporary / "profile", extension,
                     viewport={"width": 1000, "height": 1000},
-                    args=["--disable-features=DisableLoadExtensionCommandLineSwitch", f"--disable-extensions-except={extension}", f"--load-extension={extension}"],
-                    ignore_default_args=["--disable-extensions"],
                 )
-                worker = browser_context.service_workers[0] if browser_context.service_workers else browser_context.wait_for_event("serviceworker")
-                worker.evaluate("()=>{chrome.offscreen.createDocument=undefined;}")  # Exercise browser-reader path.
-                worker.evaluate("()=>{chrome.runtime.sendNativeMessage=async()=>{throw new Error('Native profiles disabled in isolated tests');};}")
+                extension_worker(browser_context)
                 return browser_context
 
             context = launch()
@@ -93,14 +93,14 @@ def main():
                 panel = context.new_page()
                 panel.on("pageerror", lambda error: errors.append(str(error)))
                 panel.goto(f"chrome-extension://{extension_id}/panel.html")
-                panel.get_by_role("tab", name="Locations", exact=True).click()
+                panel.get_by_role("tab", name="Websites", exact=True).click()
 
                 def dismiss():
                     expect(panel.locator("#availability-popup")).to_have_count(0)
 
                 def check():
                     previous_tab = panel.locator('.app-tabs [aria-selected="true"]').get_attribute("id")
-                    panel.get_by_role("tab", name="Locations", exact=True).click()
+                    panel.get_by_role("tab", name="Websites", exact=True).click()
                     before = int(panel.locator("#check-count").text_content())
                     select_building_for_actions(panel)
                     panel.get_by_role("button", name="Check now", exact=True).click()
@@ -181,7 +181,7 @@ def main():
                 select_building_for_actions(panel)
                 panel.get_by_role("button", name="Check now", exact=True).click()
                 expect(panel.locator(".attention-monitor")).to_contain_text("verification", timeout=30000)
-                expect(panel.locator(".attention-monitor")).to_contain_text("OurDomain · Amsterdam Diemen")
+                expect(panel.locator(".building-control-heading")).to_contain_text("OurDomain · Amsterdam Diemen")
                 affected_id = worker.evaluate("async () => (await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors[0].tabId")
                 panel.get_by_role("button", name="Open affected tab ↗", exact=True).click()
                 assert worker.evaluate("async id => (await chrome.tabs.get(id)).active", affected_id)
@@ -200,14 +200,14 @@ def main():
                 select_building_for_actions(panel)
                 panel.get_by_role("button", name="Stop monitoring", exact=True).click()
                 expect(panel.locator("#active-count")).to_have_text("0")
-                panel.get_by_role("tab", name="Profiles", exact=True).click()
+                panel.get_by_role("tab", name="Applicants", exact=True).click()
                 panel.locator(".profile-group").filter(has_text="Current housing").locator("summary").click()
                 for field, value in {"firstName": "Alex", "lastName": "Example", "email": "alex@example.com", "phone": "+31612345678", "address": "Example street 1", "postalCode": "1234 AB", "city": "Amsterdam"}.items():
                     panel.locator(f"#personal-{field}").fill(value)
                 panel.get_by_role("button", name="Save profile", exact=True).click()
                 expect(panel.locator("#personal-view")).to_be_visible()
                 expect(panel.locator("#application-readiness")).to_have_text("Missing details")
-                panel.get_by_role("tab", name="Profiles", exact=True).click()
+                panel.get_by_role("tab", name="Applicants", exact=True).click()
                 panel.locator("#personal-firstName").fill("Unsaved name")
                 worker.evaluate("async () => { const key = 'spotalert.ui.v1'; await chrome.storage.local.set({[key]: {compact: true}}); }")
                 expect(panel.locator("body")).to_have_class("compact")
@@ -224,7 +224,7 @@ def main():
                 expect(panel.locator("#debug-mode")).not_to_be_checked()
                 panel.locator("#debug-mode").check()
                 expect(panel.locator("#debug-mode")).to_be_enabled()
-                panel.get_by_role("tab", name="Locations", exact=True).click()
+                panel.get_by_role("tab", name="Websites", exact=True).click()
                 check()
                 panel.get_by_role("tab", name="Settings", exact=True).click()
                 expect(panel.locator(".debug-capture > summary").first).to_contain_text("· form", timeout=30000)
@@ -247,7 +247,7 @@ def main():
                 assert all("tabId" not in capture for capture in exported["captures"])
                 panel.locator("#clear-debug").click()
                 expect(panel.locator("#debug-count")).to_have_text("0")
-                panel.get_by_role("tab", name="Locations", exact=True).click()
+                panel.get_by_role("tab", name="Websites", exact=True).click()
                 check()
                 panel.get_by_role("tab", name="Settings", exact=True).click()
                 expect(panel.locator("#debug-count")).to_have_text("0")
@@ -261,21 +261,21 @@ def main():
             try:
                 panel = context.new_page()
                 panel.goto(f"chrome-extension://{extension_id}/panel.html")
-                panel.get_by_role("tab", name="Locations", exact=True).click()
+                panel.get_by_role("tab", name="Websites", exact=True).click()
                 edit()
                 expect(panel.locator("#hours-enabled")).to_be_checked()
                 expect(panel.locator("#hours-timezone")).to_have_value("UTC")
                 panel.locator("#close-editor").click()
                 expect(panel.locator("#active-count")).to_have_text("0")
-                panel.get_by_role("tab", name="Profiles", exact=True).click()
+                panel.get_by_role("tab", name="Applicants", exact=True).click()
                 expect(panel.locator("#personal-firstName")).to_have_value("Alex")
                 expect(panel.locator("#personal-email")).to_have_value("alex@example.com")
                 panel.locator(".profile-tools > summary").click()
                 panel.get_by_role("button", name="Delete profile", exact=True).click()
                 expect(panel.locator("#personal-firstName")).to_have_value("")
                 expect(panel.locator("#application-readiness")).to_have_text("Awaiting information")
-                panel.get_by_role("tab", name="Locations", exact=True).click()
-                panel.get_by_role("tab", name="Profiles", exact=True).click()
+                panel.get_by_role("tab", name="Websites", exact=True).click()
+                panel.get_by_role("tab", name="Applicants", exact=True).click()
                 expect(panel.locator("#personal-email")).to_have_value("")
             finally:
                 context.close()
