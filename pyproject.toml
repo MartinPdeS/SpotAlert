@@ -34,6 +34,7 @@ dependencies = [
 keywords = ["alerts", "availability", "rental", "studio", "monitoring"]
 
 [project.optional-dependencies]
+release = ["martinpdes-maintenance==0.2.2"]
 testing = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -73,3 +74,7 @@ addopts = [
     "--cov-report=term-missing",
 ]
 testpaths = ["tests"]
+
+[tool.mps-maintenance]
+version-file = "SpotAlert/_version.py"
+version-method = "literal"
