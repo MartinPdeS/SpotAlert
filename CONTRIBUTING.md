@@ -24,7 +24,7 @@ GitHub Actions runs Ruff and Python 3.10–3.13 tests through the shared
 MPSActions workflows. Separate jobs run the Node extension behavior suite,
 isolated Chromium fixture scripts, and a package build. The wheel check verifies
 that all extension source assets are included. CI runs on pull requests and
-pushes to `main` or `master`, and on `v*` tags. Dependabot checks Python and
+pushes to `master`, and on `v*` tags. Dependabot checks Python and
 GitHub Actions dependencies quarterly.
 
 The Python package version and Chrome manifest version are independent. A
