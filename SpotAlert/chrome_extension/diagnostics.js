@@ -30,3 +30,43 @@ export function diagnosticReport(state = {}, recent = [], environment = {}) {
     })),
   };
 }
+
+/** Build a bounded timeline from control metadata, never page or applicant text. */
+export function diagnosticActivity(state = {}, recent = []) {
+  const labels = {
+    saved: 'Monitoring rule saved', started: 'Monitoring started', paused: 'Monitoring stopped',
+    cancelled: 'Check cancelled', interval: 'Check interval changed', check: 'Check completed',
+    error: 'Check failed', warning: 'Monitoring needs attention',
+  };
+  const applicationLabels = {
+    started: 'Application started', stopped: 'Application stopped',
+    'page-inspected': 'Application page inspected', 'booking-retry': 'Booking retried',
+    'booking-retry-result': 'Booking retry completed', 'booking-advanced': 'Booking advanced',
+    'date-selected': 'Move-in date selected', 'booking-click-result': 'Booking action completed',
+    'navigation-interrupted-script': 'Application navigation interrupted',
+  };
+  const events = [];
+  const add = (at, category, location, severity, message, details = '') => {
+    const time = typeof at === 'number' ? at : Date.parse(at);
+    if (Number.isFinite(time) && time > 0) events.push({at: time, category, location, severity, message, details});
+  };
+  for (const monitor of state.monitors || []) {
+    for (const event of (monitor.history || []).slice(0, 80)) {
+      if (Object.hasOwn(labels, event.kind)) add(event.at, 'monitoring', monitor.id, ['error', 'warning'].includes(event.kind) ? 'attention' : 'info', labels[event.kind]);
+    }
+    for (const event of (monitor.application?.trace || []).slice(-80)) {
+      const details = ['attempt', 'ajaxWaits', 'dateWaits', 'buttonWaits', 'dateMatches', 'visibleButtons', 'enabledButtons']
+        .filter(key => Number.isFinite(event[key]) && event[key] >= 0)
+        .map(key => `${key}: ${event[key]}`).join(' · ');
+      if (Object.hasOwn(applicationLabels, event.event)) add(event.at, 'application', monitor.id, event.event === 'stopped' || event.event === 'navigation-interrupted-script' ? 'attention' : 'info', applicationLabels[event.event], details);
+    }
+  }
+  const actionLabels = {queued: 'Search action queued', running: 'Search action running', sent: 'Search action sent', review: 'Search action needs review', failed: 'Search action failed', interrupted: 'Search action interrupted', cancelled: 'Search action cancelled'};
+  for (const search of state.searches || []) {
+    for (const action of (search.activity || []).slice(0, 80)) {
+      if (Object.hasOwn(actionLabels, action.status)) add(action.at, 'search', action.monitorId || '', ['failed', 'review', 'interrupted'].includes(action.status) ? 'attention' : 'info', actionLabels[action.status]);
+    }
+  }
+  for (const error of recent.slice(-20)) add(error.at, 'dashboard', '', 'attention', 'Dashboard error recorded');
+  return events.sort((a, b) => b.at - a.at).slice(0, 100);
+}

@@ -1,7 +1,7 @@
 /** Accessible tab selection and keyboard navigation; no application state writes. */
 export function createNavigation($) {
   let visited = false;
-  const workspaceTabs = ["searches", "monitoring", "personal", "clients", "settings"];
+  const workspaceTabs = ["searches", "monitoring", "personal", "clients", "diagnostics", "settings"];
   function switchTab(name) {
     if (!workspaceTabs.includes(name)) throw new Error("Unknown workspace tab.");
     const changed = $(`#${name}-tab`).getAttribute("aria-selected") !== "true";

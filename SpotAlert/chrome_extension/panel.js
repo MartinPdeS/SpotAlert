@@ -3,11 +3,12 @@ import {createNavigation} from "./panel-navigation.js";
 import {createApplicationView} from "./panel-application.js";
 import {element} from "./panel-dom.js";
 import {mountProfileFields} from "./panel-profile-fields.js";
+import {createDiagnosticsView} from "./panel-diagnostics.js";
 import {createMaintenanceView} from "./panel-maintenance.js";
 import {diagnosticReport, diagnosticText} from './diagnostics.js';
 import {createSearchView} from "./panel-searches.js";
 import {createDeliveryView} from "./panel-delivery.js";
-import {APPLICATION_BUILD, applicationReport} from "./application-diagnostics.js";
+import {APPLICATION_BUILD} from "./application-diagnostics.js";
 import {STORAGE_KEY, siteError, listingKey, safeListingUrl, sitePattern, validateMonitor} from "./core.js";
 
 import {UI_KEY, freshness, availabilityTotals, cleanError, resultStatus, monitoringScope, errorRecovery} from "./ui.js";
@@ -18,7 +19,6 @@ const {switchTab, hasVisited} = createNavigation($);
 let value = {monitors: []};
 let selectedId = null;
 let showAllSamples = false;
-let historyFilter = "all";
 let listingFilter = "all";
 let technicalOpen = false;
 let toastTimer;
@@ -175,6 +175,7 @@ function render() {
   $("#compact-view").checked = compactView;
   renderSearches();
   renderDebug();
+  renderDiagnostics();
   renderSettings();
   renderClientOverview();
   const batch = value.checkBatch;
@@ -251,7 +252,6 @@ function renderDetail() {
   const monitor = selected();
   const root = $("#detail");
   const diagnosticsOpen = root.querySelector('.application-diagnostics')?.open;
-  const applicationTraceOpen = root.querySelector('.application-technical')?.open;
   const optionsOpen = root.querySelector('.monitor-options')?.open;
   const focusedAction = root.contains(document.activeElement) ? document.activeElement.dataset.action : null;
   root.replaceChildren();
@@ -288,27 +288,12 @@ function renderDetail() {
 
     const details = element("details", {class: "application-diagnostics", "data-application-build": APPLICATION_BUILD}, element("summary", {}, "Application activity"));
     details.open = !!diagnosticsOpen;
-    const report = applicationReport(app);
     details.append(element('p', {class: 'helper'}, `Last application attempt for ${monitor.name}${app.applicantName ? ` · ${app.applicantName}` : ''}${app.listingName ? ` · ${app.listingName}` : ''}${app.updatedAt ? ` · ${new Date(app.updatedAt).toLocaleString()}` : ''}. Separate from availability checks.`));
     details.append(element("p", {class: "helper application-result"}, app.message));
     if (app.moveInDate) details.append(element("p", {class: "helper move-in-feedback"}, `Move-in date: ${app.moveInDate}`));
-    const traceDetails = element("details", {class: "application-technical"}, element("summary", {}, "Technical trace & report"));
-    traceDetails.open = !!applicationTraceOpen;
-    traceDetails.append(element("p", {class: "helper"}, `Dashboard build ${APPLICATION_BUILD} · Run build ${report.build} · ${report.status}${report.kind ? ` (${report.kind})` : ""}`));
     if (app.build !== APPLICATION_BUILD) details.append(element("p", {class: "form-error"}, "This run used an older build. Reload SpotAlert at chrome://extensions, reopen the dashboard, and try Apply again."));
-    const list = element("ol", {class: "application-trace"});
-    for (const item of report.trace) {
-      const {at, event, ...metadata} = item;
-      list.append(element("li", {}, `${clock(at)} · ${event.replaceAll("-", " ")}`, Object.keys(metadata).length ? element("code", {}, JSON.stringify(metadata)) : ""));
-    }
-    traceDetails.append(list, element("div", {class: "control-row"}, app.tabId ? element("button", {type: "button", class: "secondary-button", onclick: guard(() => request({type: "open-application-tab", id: monitor.id}))}, "Open application tab ↗") : "", element("button", {type: "button", class: "secondary-button", onclick: () => {
-      const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], {type: "application/json"}));
-      element("a", {href: url, download: "spotalert-application-debug.json"}).click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }}, "Download debug report")));
-    const openApplication = traceDetails.querySelector('button');
-    if (app.tabId && openApplication) details.append(openApplication);
-    details.append(traceDetails);
+    if (app.tabId) details.append(element("button", {type: "button", class: "secondary-button", onclick: guard(() => request({type: "open-application-tab", id: monitor.id}))}, "Open application tab ↗"));
+    details.append(element("button", {type: "button", class: "text-button", onclick: () => { renderDiagnostics(); switchTab("diagnostics"); }}, "View diagnostics"));
     root.append(details);
   }
 
@@ -418,18 +403,7 @@ function renderDetail() {
         sample.matched && listingButton(monitor, sample)));
   })));
   root.append(sampleSection);
-  const filter = element("select", {"aria-label": "Filter activity", style: "width:auto;margin:0;padding:4px 7px;font-size:10px"}, element("option", {value: "all"}, "All events"), element("option", {value: "changes"}, "Changes & errors"));
-  filter.value = historyFilter;
-  filter.addEventListener("change", () => { historyFilter = filter.value; renderDetail(); });
-  const events = monitor.history.filter((event) => historyFilter === "all" || event.kind !== "check" || event.changed).slice(0, 20);
-  const historySection = element("section", {class: "detail-section"}, element("div", {class: "section-heading"}, element("h3", {}, "Recent activity"), filter));
-  if (!events.length) historySection.append(element("p", {class: "empty-note"}, "Checks, changes, and errors will appear here."));
-  else historySection.append(element("ol", {class: "history-list"}, ...events.map((event) => element("li", {class: "history-item"},
-    element("span", {class: `history-dot${event.available ? " positive" : ["error", "warning"].includes(event.kind) ? " error" : ""}`, "aria-hidden": "true"}),
-    element("div", {class: "history-content"}, element("strong", {}, event.message), element("p", {}, event.kind === "check" ? `${event.matchedCount}/${event.totalCount} elements matched${event.changed ? " · Text changed" : ""}` : new Date(event.at).toLocaleDateString())),
-    element("time", {datetime: new Date(event.at).toISOString()}, clock(event.at)),
-  ))));
-  technical.append(historySection);
+  technical.append(element("button", {type: "button", class: "text-button", onclick: () => { renderDiagnostics(); switchTab("diagnostics"); }}, "View activity in Diagnostics"));
   root.append(technical);
   let applicationActivity = root.querySelector('.application-diagnostics');
   if (!applicationActivity) applicationActivity = element('details', {class: 'application-diagnostics'}, element('summary', {}, 'Application activity'), element('p', {class: 'helper'}, 'No application attempt recorded for this building. Availability checks do not create an application.'));
@@ -562,6 +536,8 @@ const viewContext = {$, element, guard, request, loadState, switchTab, toast, op
 const {renderSearches} = createSearchView(viewContext);
 const {renderSettings} = createDeliveryView(viewContext);
 const {renderDebug} = createMaintenanceView({...viewContext, clock});
+const {render: renderDiagnostics} = createDiagnosticsView({...viewContext, getRecentErrors: () => recentErrors});
+$("#diagnostics-tab").addEventListener("click", renderDiagnostics);
 loadState().catch((error) => toast(error.message, true));
 
 function updateProfilePresentation() {

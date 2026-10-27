@@ -487,7 +487,7 @@ export function createEngine(api, now = () => Date.now(), timers = globalThis) {
         const library = await profileLibrary();
         const existingSearch = (await state()).searches.find(item => item.id === message.search?.id);
         const config = validateSearch(
-          {...message.search, intervalSeconds: message.search?.intervalSeconds ?? existingSearch?.intervalSeconds ?? 5},
+          {...message.search, name: message.search?.name ?? (existingSearch?.profileId === message.search?.profileId ? existingSearch?.name : undefined), intervalSeconds: message.search?.intervalSeconds ?? existingSearch?.intervalSeconds ?? 5},
           library.profiles,
         );
         if (config.actions.email && !(await api.storage.local.get(EMAIL_KEY))[EMAIL_KEY]?.apiKey) throw new Error("Configure the Resend API key in Settings → Email delivery first.");

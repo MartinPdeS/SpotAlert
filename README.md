@@ -24,7 +24,7 @@ The expand button opens the same interface as a full-page developer workspace.
 
 ## Workspace
 
-Navigation follows **My searches, Websites, Applicants, Clients, Settings**.
+Navigation follows **My searches, Websites, Applicants, Clients, Diagnostics, Settings**.
 **My searches** manages applicant-specific matching and email/application actions.
 **Websites** manages general website monitoring without applicant criteria.
 **Applicants** holds saved applicant details and preferences; **Clients** handles
@@ -51,7 +51,7 @@ recurring monitoring on. The building detail panel shows results and settings wi
 
 Each building has an **Application activity** section: it shows the last application
 attempt or an explicit empty state. Availability checks do not create these records.
-Technical traces and report downloads are nested inside the recorded attempt.
+Technical activity and reports are available in **Diagnostics**.
 
 While a manual batch is running, **Cancel checks** stops it and keeps any future
 scheduled checks. **Stop monitoring** stops recurring general checks for the selection.
@@ -84,17 +84,28 @@ Partial profiles can be saved, and the Save applicant bar stays visible while
 scrolling. Fictional applicants carry a **Test profile** badge.
 
 Websites keeps its overview collapsed and puts the interval and monitor
-configuration under **Options**. Display settings and totals sit below the results. Narrow windows use a location dropdown. Debug captures, build information, rule exports, and the
-optional local profile helper are under **Settings → Advanced**.
+configuration under **Options**. Display settings and totals sit below the results. Narrow windows use a location dropdown. Rule exports and the optional local profile helper are under **Settings → Advanced**. Debug captures and build information are under **Diagnostics**.
 
 Error notices include **Copy diagnostics** and stay visible until dismissed or
-replaced by a new notification. **Settings → Advanced → Error diagnostics** also
+replaced by a new notification. **Diagnostics → Reports and captures** also
 lets you copy or download a report. It includes the extension/build versions,
 location failure categories and check times, application traces, and the latest
 20 dashboard errors from the current session. Monitor status survives reopening
 the dashboard. Reports omit profile records, email settings, request bodies, and
 page contents; common credentials, email addresses, and URL paths in error text
 are masked. Review the report before sharing it.
+
+## Diagnostics
+
+**Diagnostics** brings system status, activity, reports, and opt-in debug captures
+together. The activity list combines existing monitoring history, application
+trace events, search actions, and recent dashboard errors. Filter by category,
+location, or severity. It displays the latest 100 recorded events using fixed
+descriptions, without applicant or page text. Monitoring and application history
+uses the existing bounded stored records; dashboard errors last only until the
+dashboard closes or reloads. This is not the Chrome developer console, and it
+does not record every internal event. Download the diagnostic report for the
+available application trace and check details. Review reports before sharing.
 
 ## Hybrid availability checks
 
@@ -109,7 +120,7 @@ browser reader. Failed direct attempts have a five-minute cooldown; browser chec
 continue at the configured interval during that time. Direct requests have a
 five-second timeout and a 2 MB response limit. Cancel check cancels either method.
 **Background check** or **Browser check** appears beside the location status;
-**Technical details & activity** and diagnostic reports include the fallback reason.
+The location’s **Technical details & activity** and diagnostic reports include the fallback reason.
 
 This uses Chrome's **offscreen** permission for HTML parsing. Reload the extension
 and accept the permission change if Chrome requests it. Applications and optional
@@ -123,7 +134,7 @@ verified. `scripts/test_hybrid_browser.py` covers both paths using isolated fixt
 
 ## Debug application links
 
-Open **Settings → Advanced → Debug capture** and enable **Open and capture application
+Open **Diagnostics → Debug capture** and enable **Open and capture application
 links**. This is off by default. After a successful refresh it opens matching,
 available direct HTTP(S) application links in background tabs and inspects their
 loaded pages. Opening a link may itself start a reservation on the provider's site.
@@ -132,7 +143,7 @@ are filled or submitted by debug capture.
 
 Each link is opened once per availability period, with up to three new captures
 per check. Repeated checks and worker restarts do not reopen an unchanged link.
-The latest 20 captures are stored in Chrome extension storage; Advanced settings show
+The latest 20 captures are stored in Chrome extension storage; Diagnostics shows
 the latest five. **Export captures** downloads all retained captures as JSON.
 **Clear captures** deletes saved output without reopening already-seen links.
 
@@ -201,7 +212,7 @@ The interface shows:
 - Last successful check, availability, and total completed checks.
 - Prominent floor-plan names and room types, with rent, bedrooms, size, and bathrooms in separate rows where provided by the website.
 - Available listings first, with All, Available, and room-type filter chips. These view filters do not change profile searches; edit criteria in the applicant profile.
-- A collapsible **Technical details & activity** section containing the selector, comparison rule, and check history.
+- A collapsible **Technical details & activity** section containing the selector and comparison rule, with a link to activity in Diagnostics.
 - Errors naming the affected site and recovery actions.
 - Responsive cards and a sticky monitoring toolbar in narrow side panels.
 - A **Compact view** toggle that remembers your preference and reduces listing spacing.
@@ -352,7 +363,7 @@ Canvas Rotterdam Blaak is monitored through its [RentCafe floor-plan portal](htt
 
 Click the SpotAlert toolbar icon to open the dashboard in a full-width Chrome tab. Application results, missing fields, and form structure are available inside the collapsed Application activity. Continue the application directly on the website; the dashboard has no resume controls. Unfamiliar application forms stop automatically and offer a downloadable field-structure report (labels and types, without entered values or URL tracking parameters) to help add support.
 
-If Apply stalls, expand Application activity under the selected location, then Technical trace & report. It shows the dashboard/run build, inspected pages, date selection, Start Application click and retry results, and stopping reason. Download debug report exports only control metadata; it excludes profile details, passwords, page content and URL query strings. Reload the unpacked extension at chrome://extensions and reopen the dashboard before reproducing a failure on a new build. Background-worker restarts are recorded separately from website failures.
+If Apply stalls, open Diagnostics and filter Activity by Applications and location. The downloadable diagnostic report includes the application trace and control metadata; it excludes profile details, passwords, page content and URL query strings. Reload the unpacked extension at chrome://extensions and reopen the dashboard before reproducing a failure on a new build. Background-worker restarts are recorded separately from website failures.
 
 Profiles support named saved applicant profiles. Create or select a profile, then save its details. Apply and Fill application form use the selected saved profile, including its account password. Existing details migrate into My profile; profiles stay in Chrome local storage.
 
@@ -389,14 +400,14 @@ The shared engine handles navigation, validation, retries, monitoring and profil
 
 ### Application workflow and recovery
 
-Apply is the dashboard’s application action. It asks which saved profile to use for that run and offers the Canvas agreement/signature opt-in in the same dialog. Choosing a profile for Apply does not change the active profile or assign it to the location. Apply shows Applying while its single run executes. The dashboard has no ongoing application card; run results and technical details remain in collapsed Application activity. Verification and missing-detail stops offer a button to the affected tab; each Apply runs continuously and stops at review or when input is required. There are no resume or retry controls; start a fresh run with Apply. Signing, payment and final submission still require review on the website.
+Apply is the dashboard’s application action. It asks which saved profile to use for that run and offers the Canvas agreement/signature opt-in in the same dialog. Choosing a profile for Apply does not change the active profile or assign it to the location. Apply shows Applying while its single run executes. The dashboard has no ongoing application card; run results remain in collapsed Application activity; technical events and reports are in Diagnostics. Verification and missing-detail stops offer a button to the affected tab; each Apply runs continuously and stops at review or when input is required. There are no resume or retry controls; start a fresh run with Apply. Signing, payment and final submission still require review on the website.
 
-Application operations hold a per-tab lock across asynchronous work; duplicate preparation or retry requests cannot change that tab concurrently. Locks release after success, cancellation or failure. Worker restarts mark interrupted runs for review. Settings → Advanced displays the extension version and application build, checks its worker and source build periodically, and offers extension-settings and dashboard-reload buttons if they differ. Application writes from a stale dashboard are rejected before execution.
+Application operations hold a per-tab lock across asynchronous work; duplicate preparation or retry requests cannot change that tab concurrently. Locks release after success, cancellation or failure. Worker restarts mark interrupted runs for review. Diagnostics displays the extension version and application build, checks its worker and source build periodically, and offers extension-settings and dashboard-reload buttons if they differ. Application writes from a stale dashboard are rejected before execution.
 
 ### Profile-oriented searches
 
 Open **My searches** and choose **New search**. Select a saved applicant profile,
-choose locations, and select **Email matches**, **Fill applications automatically**, or both.
+choose locations, and select **Email matches**, **Fill applications automatically**, or both. New searches use the applicant profile name; no separate search name is required. Existing search names are retained.
 Budget, minimum size, apartment type and move-in date are read directly from the
 profile and displayed as a read-only summary. Edit them once in **Applicants**; all searches for that profile use the updated values. Existing
 copied search overrides are retired without changing the saved profile.

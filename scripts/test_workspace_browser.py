@@ -18,7 +18,7 @@ def main():
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.goto(worker.url.replace('background.js', 'panel.html'))
         expect(page.locator('#monitor-count')).to_have_text('3')
-        assert page.get_by_role('tab').all_text_contents() == ['My searches', 'Websites', 'Applicants', 'Clients', 'Settings']
+        assert page.get_by_role('tab').all_text_contents() == ['My searches', 'Websites', 'Applicants', 'Clients', 'Diagnostics', 'Settings']
         page.get_by_role('tab', name='Applicants', exact=True).click()
         expect(page.locator('.profile-unified-header')).to_have_count(1)
         page.locator('.profile-tools summary').click()
@@ -131,7 +131,7 @@ def main():
         for width in [320, 360, 1280]:
             page.set_viewport_size({'width': width, 'height': 900})
             assert page.locator('.app-tabs').evaluate("node => [...node.querySelectorAll('button')].every(button => button.scrollWidth <= button.clientWidth + 1)"), f'Navigation labels clipped at {width}px'
-            for tab in ['My searches', 'Websites', 'Applicants', 'Settings', 'Clients']:
+            for tab in ['My searches', 'Websites', 'Applicants', 'Settings', 'Clients', 'Diagnostics']:
                 page.get_by_role('tab', name=tab, exact=True).click()
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), (width, tab, page.evaluate("[...document.querySelectorAll('body *')].filter(e=>e.getBoundingClientRect().right>innerWidth+1 && e.getBoundingClientRect().width>0).slice(0,12).map(e=>[e.tagName,e.className,e.getBoundingClientRect().right])"))
                 if tab == 'Websites':
@@ -159,7 +159,10 @@ def main():
             expect(page.locator('.sample').get_by_role('link', name='View apartment ↗')).to_be_visible()
         page.get_by_role('tab', name='Settings', exact=True).click()
         page.locator('#advanced-settings summary').first.click()
+        page.get_by_role('tab', name='Diagnostics', exact=True).click()
         expect(page.locator('#extension-version')).to_be_visible()
+        expect(page.locator('#diagnostics-status')).to_contain_text('Last check')
+        page.get_by_role('tab', name='Settings', exact=True).click()
         expect(page.locator('#export')).to_be_visible()
         expect(page.locator('.profile-folder')).to_be_visible()
         page.screenshot(path=str(ARTIFACTS / 'workspace-advanced-1280.png'), full_page=True)
@@ -232,6 +235,10 @@ def main():
         expect(page.locator('#toast').get_by_role('button', name='Copy diagnostics')).to_be_visible()
         page.locator('#toast').get_by_role('button', name='Dismiss').click()
         expect(page.locator('#toast')).to_be_hidden()
+        page.get_by_role('tab', name='Diagnostics', exact=True).click()
+        expect(page.locator('#diagnostics-activity')).to_contain_text('Dashboard error recorded')
+        page.locator('#diagnostics-category').select_option('dashboard')
+        expect(page.locator('#diagnostics-activity')).to_contain_text('Dashboard error recorded')
         with page.expect_download() as downloaded:
             page.locator('#download-diagnostics').click()
         report = json.loads(Path(downloaded.value.path()).read_text())
@@ -240,6 +247,7 @@ def main():
         assert any(error['operation'] == 'dashboard-script' for error in report['recentErrors'])
         assert 'private-token' not in json.dumps(report)
         assert 'user@example.com' not in json.dumps(report)
+        page.get_by_role('tab', name='Settings', exact=True).click()
         page.evaluate("()=>{chrome.runtime.reload=()=>{globalThis.extensionReloadRequested=true;};}")
         expect(page.locator('#reload-extension')).to_be_visible()
         page.locator('#reload-extension').click()

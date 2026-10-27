@@ -8,7 +8,7 @@ export function validateSearch(input, profiles) {
   if (!profile) throw new Error("Choose a saved profile.");
   const locationIds = [...new Set(input.locationIds || [])];
   if (!locationIds.length || locationIds.some(id => !SUPPORTED_SITES.some(site => site.id === id))) throw new Error("Choose at least one supported location.");
-  const name = String(input.name || '').trim();
+  const name = String(input.name ?? profile.name ?? '').trim();
   if (!name || name.length > 80) throw new Error("Enter a search name of up to 80 characters.");
   const intervalSeconds = Number(input.intervalSeconds ?? 5);
   if (!Number.isFinite(intervalSeconds) || intervalSeconds < 5 || intervalSeconds > 86400) {

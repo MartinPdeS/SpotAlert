@@ -20,6 +20,7 @@
       <button id="monitoring-tab" role="tab" aria-selected="false" aria-controls="monitoring-view" tabindex="-1">Websites</button>
       <button id="personal-tab" role="tab" aria-selected="false" aria-controls="personal-view" tabindex="-1">Applicants</button>
       <button id="clients-tab" role="tab" aria-selected="false" aria-controls="clients-view" tabindex="-1">Clients</button>
+      <button id="diagnostics-tab" role="tab" aria-selected="false" aria-controls="diagnostics-view" tabindex="-1">Diagnostics</button>
       <button id="settings-tab" role="tab" aria-selected="false" aria-controls="settings-view" tabindex="-1">Settings</button>
     </div>
     <section id="searches-view" role="tabpanel" aria-labelledby="searches-tab">
@@ -78,10 +79,29 @@
 
       <section class="settings-maintenance" aria-labelledby="maintenance-title"><div><h3 id="maintenance-title">Extension</h3><p class="helper">After updating SpotAlert, reload the extension and reopen this dashboard.</p></div><button id="reload-extension" class="secondary-button" type="button" aria-label="Reload extension" title="Reload SpotAlert, then reopen the dashboard">Reload extension</button></section>
       <details id="advanced-settings" class="advanced-settings"><summary>Advanced</summary>
-        <p class="helper">Diagnostics, local storage, and rule exports.</p>
+        <p class="helper">Local storage and rule exports.</p>
+      <section class="profile-folder"><div><strong>Local profile folder</strong><p id="profile-folder-status" class="helper">Keep a JSON copy alongside SpotAlert.</p></div><button type="button" id="enable-profile-folder" class="secondary-button">Use local folder</button><button type="button" id="open-profile-folder" class="secondary-button" hidden>See profile folder ↗</button></section>
+        <button id="export" class="text-button export-button">↓ Export rules as JSON</button>
+      </details>
+    </section>
+    <section id="diagnostics-view" role="tabpanel" aria-labelledby="diagnostics-tab" hidden>
+      <div class="settings-heading"><h2>Diagnostics</h2></div>
+      <p class="helper scope-explainer">Recent activity and system status. This is not the Chrome developer console.</p>
+      <section class="diagnostics-section" aria-labelledby="diagnostics-status-title"><h3 id="diagnostics-status-title">System status</h3>
+        <div id="diagnostics-status"></div>
+      </section>
+      <section class="diagnostics-section" aria-labelledby="diagnostics-activity-title"><h3 id="diagnostics-activity-title">Activity</h3>
+        <p class="helper">Latest recorded events, up to 100. Monitoring and application history survives dashboard reloads; dashboard errors are kept for this session.</p>
+        <div class="diagnostics-filters">
+          <label>Category<select id="diagnostics-category"><option value="all">All categories</option><option value="monitoring">Monitoring</option><option value="application">Applications</option><option value="search">Search actions</option><option value="dashboard">Dashboard errors</option></select></label>
+          <label>Location<select id="diagnostics-location"><option value="all">All locations</option></select></label>
+          <label>Severity<select id="diagnostics-severity"><option value="all">All events</option><option value="attention">Needs attention</option><option value="info">Info</option></select></label>
+        </div>
+        <ol id="diagnostics-activity" class="diagnostics-activity"></ol><p id="diagnostics-empty" class="helper" hidden>No activity matches these filters.</p>
+      </section>
+      <section class="diagnostics-section"><h3>Reports and captures</h3>
         <section aria-label="Error diagnostics"><h4>Error diagnostics</h4><p class="helper">Build, check times, failure categories, application steps, and recent dashboard errors. Applicant details, email settings, and page contents are excluded. Review error text before sharing.</p><div class="control-row"><button id="copy-diagnostics" class="secondary-button" type="button">Copy diagnostics</button><button id="download-diagnostics" class="text-button" type="button">Download report</button></div></section>
     <p id="extension-version" class="helper" role="status"></p>
-      <section class="profile-folder"><div><strong>Local profile folder</strong><p id="profile-folder-status" class="helper">Keep a JSON copy alongside SpotAlert.</p></div><button type="button" id="enable-profile-folder" class="secondary-button">Use local folder</button><button type="button" id="open-profile-folder" class="secondary-button" hidden>See profile folder ↗</button></section>
         <details class="debug-section"><summary>Debug capture <span id="debug-count" class="count">0</span></summary>
           <label class="checkbox-label"><input id="debug-mode" type="checkbox"> Open and capture application links</label>
           <p class="helper">Opens direct links for available listings in background tabs, once per availability. Opening a link may start a reservation. Saves page text and form structure, excluding entered field values; it does not fill or submit forms.</p>
@@ -89,8 +109,7 @@
           <div class="debug-actions"><button id="export-debug" class="secondary-button" disabled>Export captures</button><button id="clear-debug" class="text-button" disabled>Clear captures</button></div>
           <div id="debug-captures"></div>
         </details>
-        <button id="export" class="text-button export-button">↓ Export rules as JSON</button>
-      </details>
+      </section>
     </section>
     <section id="clients-view" role="tabpanel" aria-labelledby="clients-tab" hidden>
       <div class="personal-heading"><h2>Clients</h2></div><p class="helper scope-explainer">Request details, then review a reply before creating an applicant.</p>
@@ -162,7 +181,7 @@
     <form id="search-form">
       <div class="search-editor-heading"><h2 id="search-editor-title">Create a search</h2><p>Choose an applicant, locations and actions.</p></div>
       <input id="search-id" type="hidden">
-      <section class="search-editor-section"><h3><span>01</span> Applicant</h3><label>Search name<input id="search-name" required maxlength="80" placeholder="e.g. Alex · Amsterdam studios"></label>
+      <section class="search-editor-section"><h3><span>01</span> Applicant</h3>
       <label>Applicant<select id="search-profile" required></select></label>
       <label>Check every<select id="search-edit-interval"><option value="5">5 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option></select></label>
       <p id="search-recipient" class="search-recipient" aria-live="polite"></p></section>

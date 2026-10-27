@@ -172,7 +172,7 @@ export function createSearchView({$, element, guard, request, loadState, switchT
           element('div', {class: 'search-identity'}, element('h3', {id: `search-title-${search.id}`}, search.name)),
           element('span', {class: `search-status${search.enabled ? ' active' : ''}`},
             element('span', {'aria-hidden': 'true'}), search.enabled ? 'Running' : 'Paused')),
-        element('p', {class: 'search-criteria-summary'}, `${profile?.name || 'Deleted applicant'} · ${facts.join(' · ') || 'Any apartment'}`),
+        element('p', {class: 'search-criteria-summary'}, `${profile?.name && profile.name !== search.name ? `${profile.name} · ` : ''}${facts.join(' · ') || 'Any apartment'}`),
         element('p', {class: `search-outcome ${overview.kind}`, 'data-search-outcome': search.id},
           element('strong', {}, overview.label), overview.detail && element('span', {}, overview.detail)));
       if (profile?.testProfile) card.querySelector('.search-identity').append(element('span', {class: 'test-profile-badge'}, 'Test'));
@@ -346,7 +346,6 @@ export function createSearchView({$, element, guard, request, loadState, switchT
     $('#search-form').reset();
     $('#search-editor-title').textContent = search ? 'Edit search' : 'Create a search';
     $('#search-id').value = search?.id || '';
-    $('#search-name').value = search?.name || '';
     $('#search-profile').replaceChildren(...getLibrary().profiles.map(profile => element('option', {value: profile.id}, profile.name)));
     $('#search-profile').value = search?.profileId || $('#search-profile-filter').value || getLibrary().activeId;
     const defaults = searchProfilePreferences();
@@ -359,7 +358,7 @@ export function createSearchView({$, element, guard, request, loadState, switchT
     $('#search-account-options').hidden = !$('#search-auto-apply').checked;
     $('#search-error').hidden = true;
     $('#search-editor').showModal();
-    $('#search-name').focus();
+    $('#search-profile').focus();
   }
   $('#search-auto-apply').addEventListener('change', () => { $('#search-account-options').hidden = !$('#search-auto-apply').checked; });
   $('#new-search').addEventListener('click', () => showSearchEditor());
@@ -377,7 +376,7 @@ export function createSearchView({$, element, guard, request, loadState, switchT
     try {
       await request({type: 'save-search', search: {
         intervalSeconds: Number($('#search-edit-interval').value),
-        id: $('#search-id').value || undefined, name: $('#search-name').value, profileId: $('#search-profile').value,
+        id: $('#search-id').value || undefined, profileId: $('#search-profile').value,
         locationIds: [...document.querySelectorAll('input[name="search-location"]:checked')].map(item => item.value),
         actions: {email: $('#search-email').checked, autoApply: $('#search-auto-apply').checked}, createAccount: $('#search-auto-apply').checked && $('#search-create-account').checked,
       }});

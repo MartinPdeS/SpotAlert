@@ -475,3 +475,24 @@ test('another automatic application requires the matching profile, active channe
   await engine.dispatch({type:'stop-all'});
 });
 
+
+test('unnamed searches use the selected profile and preserve existing names on edit', async () => {
+  const {engine, id, api} = await setup();
+  const {EMAIL_KEY} = await import('../../SpotAlert/chrome_extension/email.js');
+  api.data[EMAIL_KEY] = {apiKey: 'test'};
+  await engine.dispatch({type: 'save-profile', name: 'Alex', profile: {email: 'alex@example.com'}});
+  const firstId = (await engine.dispatch({type: 'profiles'})).activeId;
+  const input = {profileId: firstId, locationIds: [id], actions: {email: true}};
+  await engine.dispatch({type: 'save-search', search: input});
+  let search = (await engine.state()).searches.at(-1);
+  assert.equal(search.name, 'Alex');
+  await engine.dispatch({type: 'save-search', search: {...input, id: search.id, name: 'Existing name'}});
+  await engine.dispatch({type: 'save-search', search: {...input, id: search.id}});
+  search = (await engine.state()).searches.at(-1);
+  assert.equal(search.name, 'Existing name');
+  await engine.dispatch({type: 'create-profile'});
+  await engine.dispatch({type: 'save-profile', name: 'Bea', profile: {email: 'bea@example.com'}});
+  const secondId = (await engine.dispatch({type: 'profiles'})).activeId;
+  await engine.dispatch({type: 'save-search', search: {...input, id: search.id, profileId: secondId}});
+  assert.equal((await engine.state()).searches.at(-1).name, 'Bea');
+});

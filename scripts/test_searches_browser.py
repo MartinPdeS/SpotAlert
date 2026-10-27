@@ -41,12 +41,13 @@ def main():
         expect(page.locator('#search-profile-preferences')).to_contain_text('30 m²')
         expect(page.locator('#search-max-rent')).to_have_count(0)
         expect(page.locator('#search-recipient')).to_contain_text('alex@example.com')
-        page.locator('#search-name').fill('Alex Amsterdam')
+        expect(page.locator('#search-name')).to_have_count(0)
+        expect(page.locator('#search-profile')).to_be_focused()
         page.locator('#search-edit-interval').select_option('30')
         page.locator('#search-form').get_by_role('button', name='Save search', exact=True).click()
         expect(page.locator('#search-error')).to_be_visible()
         expect(page.locator('#search-error')).to_contain_text('Choose at least one supported location')
-        expect(page.locator('#search-name')).to_have_value('Alex Amsterdam')
+        expect(page.locator('#search-profile')).to_have_value('default')
         page.locator('input[name="search-location"]').first.check()
         expect(page.locator('#search-account-options')).not_to_be_visible()
         page.locator('#search-auto-apply').check()
@@ -62,7 +63,7 @@ def main():
         page.locator('#search-form').get_by_role('button', name='Save search', exact=True).click()
         expect(page.locator('#search-editor')).not_to_be_visible()
         card = page.locator('.search-card')
-        expect(card).to_contain_text('Alex Amsterdam')
+        expect(card).to_contain_text('Alex')
         expect(card.locator('.search-card-meta')).to_have_count(0)
         expect(card.locator('.search-outcome')).to_be_visible()
         expect(card).not_to_contain_text('alex@example.com')
@@ -84,7 +85,7 @@ def main():
         expect(card).to_contain_text('32 m²')
         page.reload()
         page.get_by_role('tab', name='My searches', exact=True).click()
-        expect(card).to_contain_text('Alex Amsterdam')
+        expect(card).to_contain_text('Alex')
         page.evaluate("""async () => {
           const state=(await chrome.runtime.sendMessage({type:'state'})).result;
           const result=await chrome.runtime.sendMessage({type:'set-search-interval',id:state.searches[0].id,intervalSeconds:45});
@@ -151,7 +152,7 @@ def main():
           await chrome.storage.local.set({[key]:state});
         }""")
         expect(page.locator('.search-card')).to_have_count(2)
-        alex = page.locator('.search-card').filter(has_text='Alex Amsterdam')
+        alex = page.locator('.search-card').filter(has_text='Alex')
         alex.locator('.view-search-results').click()
         detail = page.locator('#search-detail-body')
         expect(detail).to_contain_text('Studio with balcony')

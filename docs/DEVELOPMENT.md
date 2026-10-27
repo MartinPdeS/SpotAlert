@@ -26,7 +26,7 @@ The optional Python tools remain independent.
   engine mutation and generation guards; a capture failure does not turn a
   successful availability check into a failed check.
 - `panel.js` coordinates UI state and drafts. `panel-searches.js`,
-  `panel-delivery.js`, `panel-application.js`, and `panel-maintenance.js` own their
+  `panel-delivery.js`, `panel-application.js`, `panel-diagnostics.js`, and `panel-maintenance.js` own their
   focused views. `panel-navigation.js` owns accessible tab selection.
   `panel-profile-fields.js` constructs applicant inputs without persisting data.
   `panel-dom.js` constructs elements with text nodes, never interpreting applicant

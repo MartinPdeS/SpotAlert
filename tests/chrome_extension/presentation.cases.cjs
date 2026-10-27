@@ -142,3 +142,17 @@ test('applicant readiness uses selected site requirements without making optiona
   assert.ok(profileReadinessForSite({...profile, email: 'invalid'}, SUPPORTED_SITES[0]).missingFields.some(field => field.key === 'email'));
   assert.ok(!profileReadinessForSite({...profile, noMiddleName: 'Yes'}, SUPPORTED_SITES.find(site => site.id === 'canvas-rotterdam-blaak')).fields.includes('middleName'));
 });
+
+test('diagnostic activity is bounded, sorted, and contains only fixed event descriptions', async () => {
+  const {diagnosticActivity} = await import('../../SpotAlert/chrome_extension/diagnostics.js');
+  const history = Array.from({length: 80}, (_, i) => ({at: i + 1, kind: 'check', message: 'private page text'}));
+  const state = {monitors: [{id: 'canvas', history, application: {trace: [{at: 101, event: 'page-inspected', path: '/private', step: 'private'}]}}], searches: [{activity: [{at: 102, monitorId: 'canvas', status: 'failed', message: 'private email'}]}]};
+  const events = diagnosticActivity(state, [{at: 103, message: 'private credential'}]);
+  assert.equal(events[0].message, 'Dashboard error recorded');
+  assert.equal(events[1].severity, 'attention');
+  assert.equal(events[2].message, 'Application page inspected');
+  assert.ok(!JSON.stringify(events).includes('private'));
+  const many = {monitors: Array.from({length: 3}, (_, i) => ({id: String(i), history}))};
+  assert.equal(diagnosticActivity(many).length, 100);
+  assert.deepEqual(diagnosticActivity({monitors: [{id: 'x', history: [{at: 1, kind: 'unknown private'}]}]}), []);
+});
