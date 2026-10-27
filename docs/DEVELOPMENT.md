@@ -122,3 +122,13 @@ make check PYTHON=.venv/bin/python
 The first command covers isolated browser flows; the second runs Ruff, Python
 unit tests, and the complete extension behavior suite. Tests that exercise legacy
 local bridges need permission to create local sockets.
+
+## CI and release artifacts
+
+The repository's GitHub Actions checks use the shared MPSActions quality and
+Python-test workflows alongside the extension behavior suite, isolated Chromium
+fixtures, and a Python distribution build. The wheel asset check compares its
+contents with the extension source tree. Tag builds retain the distributions and
+an extension zip as Actions artifacts after all checks pass. The Python package
+tag and Chrome manifest version are independent; see `CONTRIBUTING.md` for the
+release process and artifact retention.

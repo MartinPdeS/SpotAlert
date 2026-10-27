@@ -25,7 +25,7 @@ def main():
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     fixture_state = SimpleNamespace(available=False)
     url = "https://thisisourdomain.securerc.co.uk/onlineleasing/ourdomain-amsterdam-diemen2/floorplans.aspx"
-    with TemporaryDirectory(prefix="spotalert-browser-", dir="/private/tmp") as temp:
+    with TemporaryDirectory(prefix="spotalert-browser-") as temp:
         temp = Path(temp)
         extension = temp / "extension"
         shutil.copytree(ROOT / "SpotAlert/chrome_extension", extension)

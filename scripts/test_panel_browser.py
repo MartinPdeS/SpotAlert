@@ -1,5 +1,6 @@
 """Check application presentation, keyboard controls, and narrow-screen layout."""
 from pathlib import Path
+from tempfile import gettempdir
 
 from browser_helpers import isolated_extension
 from playwright.sync_api import expect
@@ -34,7 +35,7 @@ def main():
             expect(panel.get_by_role('heading', name='Current application')).to_have_count(0)
             expect(panel.locator('#detail > .move-in-feedback')).to_have_count(0)
         panel.set_viewport_size({'width': 1280, 'height': 1000})
-        panel.screenshot(path='/private/tmp/spotalert-application.png', full_page=True)
+        panel.screenshot(path=str(Path(gettempdir()) / 'spotalert-application.png'), full_page=True)
         for width in [360, 1280]:
             panel.set_viewport_size({'width': width, 'height': 1000})
             assert panel.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Application overflows'
@@ -75,7 +76,7 @@ def main():
         for width in [360, 1280]:
             panel.set_viewport_size({'width': width, 'height': 1000})
             assert panel.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Profile overflows'
-        panel.locator('#personal-view').screenshot(path='/private/tmp/spotalert-profiles.png')
+        panel.locator('#personal-view').screenshot(path=str(Path(gettempdir()) / 'spotalert-profiles.png'))
     print('Panel checks passed: no persistent application status, selected-profile readiness, Apply-only workflow, and 360px/1280px layouts.')
 
 

@@ -67,7 +67,7 @@ def main():
         else:
             request.fulfill(content_type="text/html; charset=utf-8", body=html())
 
-    with TemporaryDirectory(prefix="spotalert-features-", dir="/private/tmp") as temporary:
+    with TemporaryDirectory(prefix="spotalert-features-") as temporary:
         temporary = Path(temporary)
         extension = temporary / "extension"
         shutil.copytree(ROOT / "SpotAlert/chrome_extension", extension)

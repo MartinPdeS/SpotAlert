@@ -1,0 +1,80 @@
+name: CI
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+    branches: [master, main]
+permissions:
+  contents: read
+jobs:
+  quality:
+    uses: MartinPdeS/MPSActions/.github/workflows/run_quality.yml@v2
+    with:
+      install-command: python -m pip install 'ruff>=0.6'
+      quality-command: python -m ruff check .
+  python:
+    uses: MartinPdeS/MPSActions/.github/workflows/run_tests.yml@v2
+    with:
+      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
+      install-command: python -m pip install -e '.[testing]'
+      test-command: python -m pytest
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/chrome_extension.test.cjs
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e .
+      - run: python -m playwright install --with-deps chromium
+      - run: make extension-browser-test PYTHON=python
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install build
+      - run: python -m build
+      - run: python scripts/check_wheel_assets.py dist/*.whl
+      - name: Package Chrome extension
+        run: |
+          cd SpotAlert/chrome_extension
+          zip -qr ../../dist/spotalert-extension.zip .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spotalert-distributions
+          path: dist/*
+          if-no-files-found: error
+  release-artifacts:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [quality, python, extension, browser, package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'martinpdes-maintenance==0.2.2'
+      - run: python -m martinpdes_maintenance.cli check --version "$GITHUB_REF_NAME"
+      - uses: actions/download-artifact@v4
+        with:
+          name: spotalert-distributions
+          path: dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spotalert-release-${{ github.ref_name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 90
