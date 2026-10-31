@@ -24,6 +24,10 @@ The expand button opens the same interface as a full-page developer workspace.
 
 ## Workspace
 
+Screens omit introductory instructions and redundant field guidance. Floor plans
+appear once results exist; history and technical details remain expandable. Action confirmations
+retain account terms, consent, and manual-review requirements.
+
 Navigation follows **My searches, Websites, Applicants, Clients, Diagnostics, Settings**.
 **My searches** manages applicant-specific matching and email/application actions.
 **Websites** manages general website monitoring without applicant criteria.
@@ -361,13 +365,15 @@ running, though the dashboard can be closed.
 
 Canvas Rotterdam Blaak is monitored through its [RentCafe floor-plan portal](https://canvas-world.securerc.co.uk/onlineleasing/andre-van-der-louwbrug-4-rotterdam-3011-wm/floorplans.aspx), linked from the [Canvas location page](https://www.canvas-world.com/nl/locations/netherlands/rotterdam/blaak). The marketing page’s permanent “View apartment” links are not availability signals. The reader supports RentCafe Apply/Availability cells, including collapsed floorplans and responsive duplicates. Canvas supports profile searches, application details, and debug capture controls. If Chrome shows a verification prompt, open the affected tab and complete it before checking again.
 
-Click the SpotAlert toolbar icon to open the dashboard in a full-width Chrome tab. Application results, missing fields, and form structure are available inside the collapsed Application activity. Continue the application directly on the website; the dashboard has no resume controls. Unfamiliar application forms stop automatically and offer a downloadable field-structure report (labels and types, without entered values or URL tracking parameters) to help add support.
+Click the SpotAlert toolbar icon to open the dashboard in a full-width Chrome tab. Application results, missing fields, and form structure are available inside the collapsed Application activity. Continue the application directly on the website; the dashboard has no resume controls. Changed applicant forms (missing expected fields, missing continuation controls, or competing continuation actions) also stop automation. Diagnostics record the reason; entered values are excluded from the field-structure report.
+
+Unfamiliar application forms stop automatically and offer a downloadable field-structure report (labels and types, without entered values or URL tracking parameters) to help add support.
 
 If Apply stalls, open Diagnostics and filter Activity by Applications and location. The downloadable diagnostic report includes the application trace and control metadata; it excludes profile details, passwords, page content and URL query strings. Reload the unpacked extension at chrome://extensions and reopen the dashboard before reproducing a failure on a new build. Background-worker restarts are recorded separately from website failures.
 
 Profiles support named saved applicant profiles. Create or select a profile, then save its details. Apply and Fill application form use the selected saved profile, including its account password. Existing details migrate into My profile; profiles stay in Chrome local storage.
 
-The Clients tab prepares an email questionnaire using the configured Resend sender, with a client recipient and your reply-to address. Preview or copy it before sending. Paste the completed details block to review answers and create a new selected profile. The questionnaire includes an optional existing account password, stored with the imported profile and masked in the review preview. Identification numbers and banking details are not requested by email. Email replies are imported manually; Gmail access is not required.
+The Clients tab prepares an email questionnaire using the configured Resend sender, with a client recipient and your reply-to address. Preview or copy it before sending. The questionnaire asks the applicant to answer Yes or No for each supported location. Paste the completed details block to review the selected locations and other answers and create a new selected profile. Older replies without location questions remain valid and import with no locations selected. The questionnaire includes an optional existing account password, stored with the imported profile and masked in the review preview. Identification numbers and banking details are not requested by email. Email replies are imported manually; Gmail access is not required.
 
 Local profile storage is an optional macOS/Linux helper. See [setup, storage format, and privacy details](docs/PROFILE_HELPER.md). Monitoring and applications work without it.
 
@@ -407,18 +413,14 @@ Application operations hold a per-tab lock across asynchronous work; duplicate p
 ### Profile-oriented searches
 
 Open **My searches** and choose **New search**. Select a saved applicant profile,
-choose locations, and select **Email matches**, **Fill applications automatically**, or both. New searches use the applicant profile name; no separate search name is required. Existing search names are retained.
-Budget, minimum size, apartment type and move-in date are read directly from the
-profile and displayed as a read-only summary. Edit them once in **Applicants**; all searches for that profile use the updated values. Existing
+use the locations saved in that applicant’s profile, and select **Email matches**, **Fill applications automatically**, or both. New searches use the applicant profile name; no separate search name is required. Existing search names are retained.
+Locations, budget, minimum size, apartment type and move-in date are read from the
+profile and displayed as a read-only summary. Edit them once in **Applicants**; all searches for that profile use the updated values. Changing saved locations pauses that applicant’s searches, clears their previous results, and requires you to start them again after review. Existing searches keep their locations until the applicant’s location selection changes. Existing
 copied search overrides are retired without changing the saved profile.
-Saving creates or updates a paused search. Configure **Email matches**, **Fill
-applications automatically**, and **Check every** in the search editor.
-**Start search** shows the saved actions and interval in a compact summary, then
-checks readiness. Expand **Change options** only when you want to adjust them for
+Configure **Email matches**, **Fill applications automatically**, and **Check every** in the search editor. For a new search, **Start search** saves it and opens a readiness review; confirm there to start it. Cancelling that review leaves the saved search paused. Editing an existing search saves it paused. The start review shows the saved actions and interval in a compact summary and checks readiness. Expand **Change options** only when you want to adjust them for
 this start. The switches retain explicit On/Off labels and a checkmark. Account
 creation remains a separate opt-in, and verification, agreements, payment, and
-final submission remain manual. Cancelling leaves the search paused. SMS remains
-unavailable in the editor’s **Advanced options**.
+final submission remain manual. Cancelling leaves the search paused. SMS appears alongside the other actions but remains unavailable.
 
 Locations share one page read across active searches. New searches default to
 **5 seconds**. A shared
@@ -432,7 +434,7 @@ Each search card shows its name, applicant preferences, and one outcome:
 confirmed matches, no matches, checking, a stale result, or a specific check
 problem. Historical counts are labeled **last known**; they do not establish
 current availability. **View matches** or **View status** opens results and
-activity. **Pause** is directly available; **Check now**, **Edit search**, and
+activity, including the duplicate-protection explanation. **Pause** is directly available; **Check now**, **Edit search**, and
 **Delete search** are in **•••**. Interval controls, the next-check countdown,
 location scope, and the latest action appear under **Search settings & checks**
 in the results dialog. Location-health indicators open the affected location.

@@ -16,7 +16,6 @@ export function mountProfileFields($) {
     details.open = ['Moving preferences', 'Contact details'].includes(section.title);
     details.dataset.fields = section.fields.map(([key]) => key).join(",");
     details.append(element("summary", {}, element("span", {class: "profile-section-title"}, section.title), element("span", {class: "profile-section-count"})));
-    if (section.helper) details.append(element("p", {class: "helper"}, section.helper));
     const grid = element("div", {class: "profile-fields"});
     const identityOrder = ["firstName", "lastName", "middleName", "noMiddleName", "dateOfBirth", "email", "phone", "nationality", "countryOfResidence", "title", "preferredName", "contactMethod"];
     const fields = section.title === "Identity details" ? [...section.fields].sort(([a], [b]) => identityOrder.indexOf(a) - identityOrder.indexOf(b)) : section.fields;
@@ -25,7 +24,6 @@ export function mountProfileFields($) {
       const checkbox = key === "noMiddleName";
       const input = checkbox ? element("input", {id: `personal-${key}`, type: "checkbox"}) : Array.isArray(type) ? element("select", {id: `personal-${key}`}) : element("input", {id: `personal-${key}`, type: type || "text", maxlength: "200"});
       if (Array.isArray(type) && !checkbox) for (const choice of ["", ...type]) input.append(element("option", {value: choice}, choice || "Choose…"));
-      input.setAttribute("aria-describedby", "profile-field-note");
       if (checkbox) wrapper.classList.add("checkbox-label", "profile-checkbox");
       if (type === "number") { input.min = "0"; input.step = "0.01"; }
       if (type === "password") {

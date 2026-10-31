@@ -190,6 +190,24 @@ def main():
         assert result['structure']['fields'][0]['label'] == 'Custom question'
         assert 'private-answer' not in str(result['structure'])
         assert 'private-token' not in str(result['structure'])
+        config = panel.evaluate("async () => {const {SUPPORTED_SITES,pageConfig}=await import('./sites/index.js');return pageConfig(SUPPORTED_SITES[0]);}")
+        probe.goto(sites[0]['url'].replace('floorplans.aspx', 'oleapplication.aspx?stepname=intapplicantinfo'))
+        changed_forms = [
+            ('missing-expected-fields', '<input id="renamedFirstName" value="private-answer"><input id="ProspectLastName"><button onclick="document.body.dataset.advanced=1">Next</button>'),
+            ('missing-next-action', '<input id="ProspectFirstName"><input id="ProspectLastName"><button onclick="document.body.dataset.advanced=1">Proceed with application</button>'),
+            ('ambiguous-next-action', '<input id="ProspectFirstName"><input id="ProspectLastName"><button onclick="document.body.dataset.advanced=1">Next</button><button onclick="document.body.dataset.advanced=1">Continue</button>'),
+        ]
+        for reason, body in changed_forms:
+            probe.set_content(body)
+            result = probe.evaluate('(config)=>{' + inspect + ';return applicationStep(true,false,config);}', config)
+            assert result['kind'] == 'unfamiliar', result
+            assert result['changeReason'] == reason, result
+            assert probe.locator('body').get_attribute('data-advanced') is None
+            assert 'private-answer' not in str(result['structure'])
+        probe.set_content('<input id="ProspectFirstName"><input id="ProspectLastName"><button onclick="document.body.dataset.advanced=1">Next</button>')
+        result = probe.evaluate('(config)=>{' + inspect + ';return applicationStep(true,false,config);}', config)
+        assert result['advanced'] is True
+        assert probe.locator('body').get_attribute('data-advanced') == '1'
         assert worker.evaluate("async()=>!(await chrome.storage.local.get('spotalert.monitors.v2'))['spotalert.monitors.v2'].monitors.some(m=>JSON.stringify(m.application).includes('TestPassword'))")
     print('Application flow passed for all sites: booking/date, autofill, Next, missing fields, fresh runs without resume, registration/documents/payment stops, and private status.')
 

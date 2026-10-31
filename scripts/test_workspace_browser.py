@@ -226,7 +226,7 @@ def main():
         expect(page.get_by_role('button', name='Check now', exact=True)).to_be_enabled()
         page.locator('.monitor-card').nth(1).click()
         expect(page.get_by_role('button', name='Retry check', exact=True)).to_be_visible()
-        expect(page.locator('#detail')).to_contain_text('Availability could not be confirmed')
+        expect(page.locator('#detail')).to_contain_text('Availability unconfirmed')
         expect(page.locator('#detail')).to_contain_text('complete verification')
         page.get_by_role('tab', name='Settings', exact=True).click()
         page.locator('#advanced-settings').evaluate('node => node.open = true')

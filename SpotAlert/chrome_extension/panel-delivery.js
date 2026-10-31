@@ -1,5 +1,6 @@
+import {SUPPORTED_SITES} from "./sites/index.js";
 import {EMAIL_KEY} from "./email.js";
-import {clientQuestionnaire, parseClientReply, CLIENT_FIELDS} from "./clients.js";
+import {clientQuestionnaire, parseClientAnswers, CLIENT_FIELDS} from "./clients.js";
 
 export function createDeliveryView({$, element, guard, request, loadState, switchTab, toast, getLibrary, isPersonalDirty}) {
   function renderSettings() {
@@ -52,10 +53,11 @@ export function createDeliveryView({$, element, guard, request, loadState, switc
   $("#client-reply").addEventListener("input", () => { reviewedClientReply = null; $("#import-client-profile").hidden = true; $("#client-import-preview").hidden = true; });
   $("#review-client-reply").addEventListener("click", guard(() => {
     reviewedClientReply = null; $("#import-client-profile").hidden = true;
-    const profile = parseClientReply($("#client-reply").value);
+    const {profile, locationIds} = parseClientAnswers($("#client-reply").value);
     const preview = $("#client-import-preview");
     const list = element("dl", {class: "client-answer-list"});
     for (const [key, label] of CLIENT_FIELDS) if (profile[key]) list.append(element("dt", {}, label), element("dd", {}, key === "registrationPassword" ? "Password provided · hidden" : profile[key]));
+    list.append(element("dt", {}, "Preferred locations"), element("dd", {}, locationIds.map(id => SUPPORTED_SITES.find(site => site.id === id)?.name || id).join(" · ") || "None selected"));
     preview.replaceChildren(element("h4", {}, "Review extracted answers"), list); preview.hidden = false;
     reviewedClientReply = $("#client-reply").value; $("#import-client-profile").hidden = false;
   }));

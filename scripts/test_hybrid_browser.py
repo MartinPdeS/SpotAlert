@@ -106,7 +106,7 @@ def main():
         panel.locator('.monitor-card').first.click()
         expect(panel.locator('.application-diagnostics > summary')).to_have_text('Application activity')
         panel.locator('.application-diagnostics > summary').click()
-        expect(panel.locator('.application-diagnostics')).to_contain_text('No application attempt recorded')
+        expect(panel.locator('.application-diagnostics')).to_contain_text('No application attempts yet.')
         worker.evaluate("()=>{globalThis.fixtureMode='pending';}")
         panel.locator('#check-all-buildings').click()
         expect(panel.locator('#check-all-buildings')).to_be_disabled()

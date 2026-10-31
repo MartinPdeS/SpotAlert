@@ -36,6 +36,20 @@ Persist application data through existing engine commands. UI preferences retain
 their existing dedicated Chrome-storage key. Do not introduce a second engine
 store or mutate persisted application data from a view controller.
 
+Browser tab lifecycle, page-load waits, and reader retries live in
+`browser-reader.js`. Manual batch sequencing and cancellation live in
+`batch-checks.js`; both receive the engine's existing state and command helpers.
+Floor-plan rendering lives in `panel-listings.js`, with selection and actions
+passed back through callbacks. These modules do not add storage paths.
+
+Application form expectations live in the provider's `formFields` configuration.
+The injected inspector checks expected fields before autofill, and checks for
+missing or ambiguous continuation actions before advancing. Changed forms stop
+for review and retain bounded field-structure metadata without entered values.
+The ordinary diagnostic timeline uses fixed change descriptions; application
+traces retain the reason code. These checks detect known structural changes,
+not every possible semantic change in a third-party form.
+
 ## State contracts
 
 `contracts.js` contains shared JSDoc types for commands, monitors, searches,
@@ -63,6 +77,13 @@ Applications use `application-state.js` stages and stop for user review at
 sensitive or unfamiliar steps; an attempt is not a final submission.
 
 ## Workspace presentation
+
+Keep interface copy focused on outcomes and next actions. Remove explanatory
+paragraphs that repeat headings, labels, or obvious actions. Do not replace them
+with shorter instructions. Omit empty floor-plan sections until results exist. Keep empty states short,
+and place background explanations in existing expandable details. Preserve
+freshness distinctions, recovery instructions, and explicit consent information
+in action confirmations.
 
 Search cards use `searchOverview()` in `ui.js` for current, pending, failed, and
 historical outcomes. Preserve the distinction between a recurring search being
@@ -132,3 +153,20 @@ contents with the extension source tree. Tag builds retain the distributions and
 an extension zip as Actions artifacts after all checks pass. The Python package
 tag and Chrome manifest version are independent; see `CONTRIBUTING.md` for the
 release process and artifact retention.
+
+## Applicant location preferences
+
+Applicant entries may have a `locationIds` array alongside their details. The
+local profile helper preserves it with the rest of the profile library. Older
+entries without that field show the union of their existing search locations in
+Applicants, without changing those searches. Editing an existing legacy search
+keeps its own scope until the applicant's location selection is changed.
+Saving a changed selection pauses all searches for that applicant, invalidates
+queued work, clears their results, stops their running applications, and reconciles
+monitoring schedules. Existing duplicate-protection claims remain intact. A
+request already sent to a website or mail provider cannot be undone.
+
+Run `.venv/bin/python scripts/test_website_changes_browser.py` to exercise
+changed forms through the real extension runner on isolated synthetic pages.
+Missing expected fields, missing continuation controls, and competing controls
+must stop before autofill or clicks, with the reason retained in diagnostics.

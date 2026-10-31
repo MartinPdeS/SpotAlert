@@ -44,7 +44,7 @@ export function createApplicationView({$, element, guard, request, toast, getLib
     for (const [label, detail] of [["Applicant", applicant.name], ["Name", [applicant.details.firstName, applicant.details.lastName].filter(Boolean).join(" ") || "Not provided"], ["Email", applicant.details.email || "Not provided"], ["Move-in", dateLabel]]) list.append(element("dt", {}, label), element("dd", {}, detail));
     pendingApplication = {id: monitor.id, listingId: listingKey(sample), profileId: applicant.id};
     $("#confirm-apply").disabled = false;
-    $("#apply-confirmation-note").textContent = "This profile is used for this application only. The move-in date is checked against the website calendar. Review agreements and final submission on the website.";
+    $("#apply-confirmation-note").textContent = "Review agreements and final submission on the website. Move-in dates depend on the website calendar.";
   }
   $("#apply-profile").addEventListener("change", updateApplyConfirmation);
   $("#cancel-apply").addEventListener("click", () => $("#apply-confirmation").close());

@@ -25,3 +25,7 @@ this helper; the old Python monitoring bridge is separate and unused by the app.
 
 Saved applicant details and preferences are managed in **Applicants**. The optional
 folder connection remains in **Settings → Advanced**.
+
+Preferred search locations are stored with each applicant entry and are included
+in the local profile library. Existing files without location preferences remain
+readable; SpotAlert derives an initial selection from existing searches.

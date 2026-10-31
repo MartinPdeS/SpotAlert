@@ -103,7 +103,7 @@ test('saved applicants migrate, switch independently and retain their own passwo
 });
 
 test('client questionnaire imports answers and optional existing account passwords', async () => {
-  const {clientQuestionnaire, parseClientReply} = await import('../../SpotAlert/chrome_extension/clients.js');
+  const {clientQuestionnaire, parseClientReply, parseClientAnswers} = await import('../../SpotAlert/chrome_extension/clients.js');
   const blank = clientQuestionnaire('Alex');
   assert.ok(blank.includes('Password:'));
   assert.match(blank, /Otherwise leave it blank/);
@@ -113,13 +113,21 @@ test('client questionnaire imports answers and optional existing account passwor
   assert.equal(parseClientReply(reply).firstName, 'Alex');
   assert.throws(() => parseClientReply(reply.replace('First name: Alex', 'First name: Alex\nFirst name: Sam')), /more than once/);
   assert.throws(() => parseClientReply(reply.replace('First name: Alex', 'Unknown field: secret')), /Unrecognized/);
+  assert.match(blank, /Location - OurDomain · Amsterdam Diemen:/);
+  assert.match(blank, /Location - Canvas · Rotterdam Blaak:/);
+  const withLocations = reply.replace('Location - OurDomain · Amsterdam Diemen: ', 'Location - OurDomain · Amsterdam Diemen: Yes').replace('Location - Canvas · Rotterdam Blaak: ', 'Location - Canvas · Rotterdam Blaak: yes');
+  assert.deepEqual(parseClientAnswers(withLocations).locationIds, ['ourdomain-amsterdam-diemen', 'canvas-rotterdam-blaak']);
+  assert.throws(() => parseClientAnswers(withLocations.replace('Diemen: Yes', 'Diemen: Maybe')), /Yes or No/);
+  const oldReply = reply.replace(/^Location - .*\n/gm, '');
+  assert.deepEqual(parseClientAnswers(oldReply).locationIds, []);
   const withPassword = reply.replace('Password: ', 'Password: ClientExisting123!');
   assert.equal(parseClientReply(withPassword).registrationPassword, 'ClientExisting123!');
   const {engine, api} = await setup();
   const {PROFILE_KEY, PROFILES_KEY} = await import('../../SpotAlert/chrome_extension/profile.js');
-  await engine.dispatch({type:'import-client-profile', name:'Alex client', reply});
+  await engine.dispatch({type:'import-client-profile', name:'Alex client', reply: withLocations});
   assert.equal(api.data[PROFILE_KEY].email, 'alex@example.com');
   assert.equal(api.data[PROFILES_KEY].profiles.length, 2);
+  assert.deepEqual(api.data[PROFILES_KEY].profiles.at(-1).locationIds, ['ourdomain-amsterdam-diemen', 'canvas-rotterdam-blaak']);
   assert.ok(!JSON.stringify(await engine.state()).includes('alex@example.com'));
 });
 

@@ -156,3 +156,18 @@ test('diagnostic activity is bounded, sorted, and contains only fixed event desc
   assert.equal(diagnosticActivity(many).length, 100);
   assert.deepEqual(diagnosticActivity({monitors: [{id: 'x', history: [{at: 1, kind: 'unknown private'}]}]}), []);
 });
+
+
+test('website-change diagnostics use fixed reasons and omit page and applicant values', async () => {
+  const {diagnosticActivity, diagnosticReport} = await import('../../SpotAlert/chrome_extension/diagnostics.js');
+  const state = {monitors: [{id: 'canvas', application: {trace: [
+    {at: 1, event: 'stopped', kind: 'unfamiliar', changeReason: 'missing-expected-fields', value: 'private-answer'},
+  ]}}]};
+  const events = diagnosticActivity(state);
+  assert.equal(events[0].message, 'Website form changed');
+  assert.equal(events[0].details, 'Expected fields missing');
+  assert.equal(events[0].severity, 'attention');
+  const report = diagnosticReport(state);
+  assert.equal(report.locations[0].application.trace[0].changeReason, 'missing-expected-fields');
+  assert.ok(!JSON.stringify(report).includes('private-answer'));
+});

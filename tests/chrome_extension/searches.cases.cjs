@@ -496,3 +496,34 @@ test('unnamed searches use the selected profile and preserve existing names on e
   await engine.dispatch({type: 'save-search', search: {...input, id: search.id, profileId: secondId}});
   assert.equal((await engine.state()).searches.at(-1).name, 'Bea');
 });
+
+test('profile location changes pause linked searches and preserve legacy scopes until changed', async () => {
+  const {engine, id, api} = await setup();
+  const {EMAIL_KEY} = await import('../../SpotAlert/chrome_extension/email.js');
+  const {profileLocations} = await import('../../SpotAlert/chrome_extension/searches.js');
+  api.data[EMAIL_KEY] = {apiKey: 'test'};
+  const profile = {email: 'test@example.com'};
+  await engine.dispatch({type: 'save-profile', name: 'Test', profile});
+  const first = await saveSearch(engine, 'default', id);
+  const otherId = 'canvas-rotterdam-blaak';
+  const second = await saveSearch(engine, 'default', otherId);
+  let library = await engine.dispatch({type: 'profiles'});
+  assert.deepEqual(new Set(profileLocations(library.profiles[0], (await engine.state()).searches)), new Set([id, otherId]));
+  await engine.dispatch({type: 'save-profile', name: 'Test', profile, locationIds: [id, otherId]});
+  let state = await engine.state();
+  assert.deepEqual(state.searches.find(search => search.id === first.id).locationIds, [id]);
+  assert.deepEqual(state.searches.find(search => search.id === second.id).locationIds, [otherId]);
+  await engine.dispatch({type: 'set-search-enabled', id: first.id, enabled: true});
+  const previousGeneration = (await engine.state()).searches.find(search => search.id === first.id).generation;
+  await engine.dispatch({type: 'save-profile', name: 'Test', profile, locationIds: [otherId]});
+  state = await engine.state();
+  for (const search of state.searches) {
+    assert.deepEqual(search.locationIds, [otherId]);
+    assert.equal(search.enabled, false);
+    assert.deepEqual(search.results, {});
+  }
+  assert.notEqual(state.searches.find(search => search.id === first.id).generation, previousGeneration);
+  library = await engine.dispatch({type: 'profiles'});
+  assert.deepEqual(library.profiles[0].locationIds, [otherId]);
+  await assert.rejects(engine.dispatch({type: 'save-profile', profile, locationIds: ['unknown']}), /supported locations/);
+});

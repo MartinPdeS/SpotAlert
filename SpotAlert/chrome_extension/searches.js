@@ -2,6 +2,12 @@ import {SUPPORTED_SITES} from "./core.js";
 import {PROFILE_SECTIONS, validateProfile} from "./profile.js";
 import {applicationReadiness} from "./ui.js";
 
+/** Legacy profiles derive an initial selection without changing saved searches. */
+export function profileLocations(profile, searches = []) {
+  if (Array.isArray(profile?.locationIds)) return [...profile.locationIds];
+  return [...new Set(searches.filter(search => search.profileId === profile?.id).flatMap(search => search.locationIds || []))];
+}
+
 /** @returns {import("./contracts.js").SearchConfig} */
 export function validateSearch(input, profiles) {
   const profile = profiles.find(item => item.id === input.profileId);

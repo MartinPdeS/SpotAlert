@@ -2360,6 +2360,7 @@ input[type="checkbox"] {
 }
 
 .profile-name-label {
+  margin-top: var(--space-2);
   max-width: 420px;
   margin-bottom: 0px;
 }
@@ -3250,15 +3251,6 @@ input[type="checkbox"] {
   margin: 0px 0px var(--space-4);
 }
 
-.search-recipient {
-  padding: 10px var(--space-3);
-  border-radius: var(--radius-control);
-  background: var(--raised);
-  color: var(--muted);
-  font-size: var(--text-xs);
-  line-height: 1.7;
-  margin-bottom: var(--space-3);
-}
 
 #search-locations .checkbox-label {
   min-height: 44px;
@@ -3587,6 +3579,7 @@ input[type="checkbox"] {
 }
 
 .explicit-toggle.unavailable {
+  opacity: 0.65;
   border-style: dashed;
   background: var(--bg);
   cursor: default;
@@ -4837,20 +4830,6 @@ input::placeholder, textarea::placeholder {
   white-space: nowrap;
 }
 
-.profile-rename {
-  margin-top: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--muted);
-}
-
-.profile-rename summary {
-  cursor: pointer;
-}
-
-.profile-rename label {
-  margin-top: 10px;
-}
-
 .profile-unified-header .client-overview {
   border: 0px;
   border-radius: 0px;
@@ -4899,10 +4878,6 @@ input::placeholder, textarea::placeholder {
 
 .search-identity .test-profile-badge {
   margin-top: 0px;
-}
-
-.profile-field-note {
-  margin: 14px 0px var(--space-5);
 }
 
 #personal-view .profile-group {
@@ -5950,3 +5925,6 @@ body:has(#personal-view:not([hidden])) .toast {
 .diagnostics-activity { list-style: none; padding: 0; margin: 12px 0; }
 .diagnostics-event { display: grid; gap: 3px; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .diagnostics-event time { color: var(--muted); font-size: 0.8rem; }
+
+#profile-locations { padding: var(--space-4) var(--space-5); }
+#profile-locations .checkbox-label { margin: 8px 0; }

@@ -1,8 +1,8 @@
 import {attentionItems, mergeActionHistory, resultStatus, errorRecovery, searchOverview, locationIssue} from "./ui.js";
-import {exclusionReasons, searchClaimKey, claimActionId} from "./searches.js";
+import {exclusionReasons, profileLocations, searchClaimKey, claimActionId} from "./searches.js";
 import {listingKey, safeListingUrl} from "./core.js";
 
-export function createSearchView({$, element, guard, request, loadState, switchTab, getState, getLibrary, openProfile, openLocation, showApplyConfirmation}) {
+export function createSearchView({$, element, guard, request, loadState, switchTab, getState, getLibrary, openProfile, openLocation, showApplyConfirmation, toast}) {
   let detailSearchId = null;
   let attentionOpen = false;
   let quickFilter = 'all';
@@ -86,7 +86,7 @@ export function createSearchView({$, element, guard, request, loadState, switchT
       return element('article', {class: 'attention-item'}, element('div', {}, element('h4', {}, item.title), element('p', {}, item.message)), element('div', {class: 'attention-actions'}, element('button', {type: 'button', class: 'secondary-button', 'data-attention-id': item.id, onclick: guard(run)}, item.label),
         item.channel === 'email' && element('button', {type: 'button', class: 'text-button', onclick: () => { switchTab('settings'); $('#email-api-key').focus(); }}, 'Email settings')));
     }));
-    if (!items.length) root.append(element('p', {class: 'attention-empty'}, 'All clear. No applications or delivery issues need review.'));
+    if (!items.length) root.append(element('p', {class: 'attention-empty'}, 'Nothing needs attention.'));
     if (focused) [...root.querySelectorAll('button')].find(button => button.dataset.attentionId === focused)?.focus({preventScroll: true});
   }
   function renderSearches() {
@@ -228,11 +228,12 @@ export function createSearchView({$, element, guard, request, loadState, switchT
       for (const [monitorId, result] of Object.entries(search.results || {})) for (const listing of result.matches.filter(item => !item.matched)) {
         excluded.append(element('div', {class: 'search-excluded-item'}, element('strong', {}, listing.name || listing.context || 'Apartment'), element('small', {}, getState().monitors.find(item => item.id === monitorId)?.name || monitorId), element('ul', {}, ...exclusionReasons(listing).map(reason => element('li', {}, reason)))));
       }
-      if (!excluded.querySelector('.search-excluded-item')) excluded.append(element('p', {class: 'helper'}, 'After a successful check, apartments that do not match will appear here with the reason.'));
+      if (!excluded.querySelector('.search-excluded-item')) excluded.append(element('p', {class: 'helper'}, 'No exclusions recorded yet.'));
       const records = searchClaimRecords(search);
       const timeline = mergeActionHistory(records, search.activity);
       const activity = element('details', {class: 'search-activity search-duplicates'}, element('summary', {}, `Activity (${timeline.length})`));
-      if (!timeline.length) activity.append(element('p', {class: 'helper'}, 'Email and application outcomes will appear here.'));
+      activity.append(element('details', {class: 'search-behavior-note'}, element('summary', {}, 'Duplicate protection'), element('p', {class: 'helper'}, 'Each profile receives at most one email and one automatic application per listing and location, including across overlapping searches. Failed or interrupted actions require manual review. Locations share checks using the schedule in Websites.')));
+      if (!timeline.length) activity.append(element('p', {class: 'helper'}, 'No actions yet.'));
       for (const record of timeline) {
         const location = getState().monitors.find(item => item.id === record.monitorId);
         const latest = search.results?.[record.monitorId];
@@ -303,7 +304,7 @@ export function createSearchView({$, element, guard, request, loadState, switchT
     }
     if (detailFocus) [...$('#search-detail-body').querySelectorAll('button, summary, a')].find(item => item.textContent === detailFocus)?.focus({preventScroll: true});
     if (!root.childNodes.length) {
-      const empty = element('div', {class: 'search-empty'}, element('h3', {}, searches.length ? 'No searches match these filters' : 'Create your first search'), element('p', {}, searches.length ? 'Try another applicant or filter.' : 'Choose an applicant and locations to find matching apartments.'));
+      const empty = element('div', {class: 'search-empty'}, element('h3', {}, searches.length ? 'No searches match these filters' : 'Create your first search'));
       root.append(empty);
     }
   }
@@ -327,13 +328,20 @@ export function createSearchView({$, element, guard, request, loadState, switchT
       if (detail) detail.textContent = overview.detail;
     }
   }, 1000);
+  function editorLocations(profile) {
+    const existing = getState().searches?.find(search => search.id === editorSearchId);
+    if (!Array.isArray(profile?.locationIds) && existing?.profileId === profile?.id) return [...existing.locationIds];
+    return profileLocations(profile, getState().searches);
+  }
   function searchProfilePreferences() {
     const profile = getLibrary().profiles.find(item => item.id === $('#search-profile').value);
-    $('#search-recipient').textContent = profile?.details.email ? `Emails go to ${profile.details.email}.` : 'Save an email address in this profile to receive matches.';
     return profile?.details || {};
   }
   function showProfileSearchCriteria(details) {
+    const profile = getLibrary().profiles.find(item => item.id === $('#search-profile').value);
+    const locations = editorLocations(profile).map(id => getState().monitors.find(monitor => monitor.id === id)?.name || id);
     $('#search-profile-preferences').replaceChildren(...[
+      ['Locations', locations.join(' · ') || 'No locations selected'],
       ['Monthly budget', details.maxRent ? `Up to €${details.maxRent}` : 'Any budget'],
       ['Minimum size', details.minSize ? `${details.minSize} m²` : 'Any size'],
       ['Apartment', ({studio:'Studio', '1-bedroom':'1 bedroom', '2-bedroom':'2 bedrooms', '3-plus':'3+ bedrooms'})[details.preferredApartmentType] || 'Any type'],
@@ -345,12 +353,13 @@ export function createSearchView({$, element, guard, request, loadState, switchT
     editorSearchId = search?.id || null;
     $('#search-form').reset();
     $('#search-editor-title').textContent = search ? 'Edit search' : 'Create a search';
+    $('#save-search').textContent = search ? 'Save search' : 'Start search';
+    $('#search-editor-footer-note').textContent = search ? 'Saving pauses this search.' : 'Review readiness before starting.';
     $('#search-id').value = search?.id || '';
     $('#search-profile').replaceChildren(...getLibrary().profiles.map(profile => element('option', {value: profile.id}, profile.name)));
     $('#search-profile').value = search?.profileId || $('#search-profile-filter').value || getLibrary().activeId;
     const defaults = searchProfilePreferences();
     showProfileSearchCriteria(defaults);
-    $('#search-locations').replaceChildren(...getState().monitors.map(monitor => element('label', {class: 'checkbox-label'}, element('input', {type: 'checkbox', name: 'search-location', value: monitor.id, ...(search?.locationIds.includes(monitor.id) ? {checked: ''} : {})}), monitor.name)));
     $('#search-email').checked = search?.actions.email ?? true;
     $('#search-auto-apply').checked = search?.actions.autoApply ?? false;
     $('#search-create-account').checked = search?.createAccount ?? false;
@@ -374,16 +383,25 @@ export function createSearchView({$, element, guard, request, loadState, switchT
     const submit = event.submitter;
     if (submit) submit.disabled = true;
     try {
-      await request({type: 'save-search', search: {
+      const creating = !$('#search-id').value;
+      const saved = await request({type: 'save-search', search: {
         intervalSeconds: Number($('#search-edit-interval').value),
         id: $('#search-id').value || undefined, profileId: $('#search-profile').value,
-        locationIds: [...document.querySelectorAll('input[name="search-location"]:checked')].map(item => item.value),
+        locationIds: editorLocations(getLibrary().profiles.find(profile => profile.id === $('#search-profile').value)),
         actions: {email: $('#search-email').checked, autoApply: $('#search-auto-apply').checked}, createAccount: $('#search-auto-apply').checked && $('#search-create-account').checked,
       }});
       $('#search-editor').close();
       await loadState();
       switchTab('searches');
-    } catch (error) { $('#search-error').textContent = error.message; $('#search-error').hidden = false; $('#search-error').scrollIntoView({block: 'center'}); }
+      if (creating) {
+        const search = saved.searches.find(item => item.id === saved.savedSearchId);
+        if (!search) throw new Error('Search was saved but could not be opened. Start it from My searches.');
+        await showStartSearch(search);
+      }
+    } catch (error) {
+      if (!$('#search-editor').open) toast(error.message, true);
+      else { $('#search-error').textContent = error.message; $('#search-error').hidden = false; $('#search-error').scrollIntoView({block: 'center'}); }
+    }
     finally { if (submit) submit.disabled = false; }
   });
 

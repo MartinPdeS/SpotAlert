@@ -180,3 +180,33 @@ test('opening a closed application clears its stale tab and explains how to star
   await assert.rejects(engine.dispatch({type:'continue-application',id}),/one pass/);
 });
 
+
+test('changed forms stop the runner before autofill and retain the diagnostic reason', async () => {
+  for (const reason of ['missing-expected-fields', 'missing-next-action', 'ambiguous-next-action']) {
+    const {api, engine, core, id} = await setup();
+    await engine.dispatch({type: 'save-profile', profile: {firstName: 'Alex', lastName: 'Example'}});
+    api.data[core.STORAGE_KEY].monitors.find(item => item.id === id).samples = [{
+      id: 'changed-form', matched: true,
+      applicationUrl: core.DEFAULT_URL.replace('floorplans.aspx', 'oleapplication.aspx?stepname=intapplicantinfo'),
+    }];
+    api.tabs.update = async (_id, {url}) => { if (url) api.url = url; };
+    const injected = [];
+    api.scripting.executeScript = async ({func, args}) => {
+      injected.push(func.name);
+      if (func.name === 'applicationStep') {
+        assert.ok(args[2].formFields.intapplicantinfo.includes('ProspectFirstName'));
+        return [{result: {kind: 'unfamiliar', changeReason: reason,
+          message: 'The website form changed. Review the application tab.',
+          structure: {version: 1, fields: [], actions: []}}}];
+      }
+      return [{result: null}];
+    };
+    const result = await engine.dispatch({type: 'open-listing', id, listingId: 'changed-form'});
+    assert.equal(result.kind, 'unfamiliar');
+    assert.ok(!injected.includes('fillApplicationForm'));
+    const application = (await engine.state()).monitors.find(item => item.id === id).application;
+    assert.equal(application.status, 'stopped');
+    assert.equal(application.trace.at(-1).changeReason, reason);
+    assert.equal(application.filled, 0);
+  }
+});
