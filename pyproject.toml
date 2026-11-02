@@ -34,15 +34,9 @@ dependencies = [
 keywords = ["alerts", "availability", "rental", "studio", "monitoring"]
 
 [project.optional-dependencies]
-release = ["martinpdes-maintenance==0.2.2"]
-testing = [
-    "pytest>=8.0",
-    "pytest-cov>=5.0",
-]
-dev = [
-    "pre-commit>=3.7",
-    "ruff>=0.6",
-]
+release = ["martinpdes-maintenance==0.2.3"]
+testing = ["martinpdes-maintenance[testing]==0.2.3"]
+dev = ["martinpdes-maintenance[quality]==0.2.3", "pre-commit>=3.7"]
 
 [project.scripts]
 spotalert = "SpotAlert.cli:main"
